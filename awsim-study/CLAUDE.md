@@ -14,6 +14,20 @@ The primary output is prose: Markdown reports under `reports/`, produced by driv
 headless mode. The `src/` trees are **read-only evidence**, cloned upstream repos that the study cites —
 never modify them.
 
+## Where this repo lives and where the sim runs
+
+- This directory is the `awsim-study/` subfolder of the remote git repo
+  **`git@github.com:jpoanders/autoware-stack-notes.git`** (repo root is one level up, alongside
+  `docs/` and `scripts/`). It is cloned onto more than one machine, so never assume the current machine
+  is the one where the work was done.
+- **The sim (AWSIM + the Autoware Core container) can only be run on the lab PC**, hostname
+  **`ml-XPS-8960`** (Ubuntu 22.04, RTX 3060, no sudo; AWSIM installed at `~/AWSIM-Demo-Lightweight`).
+  Setup and verification steps: `lab-machine-setup.md`. Check with `hostname` before trying anything
+  that needs a running sim. On any other machine, treat the sim as not executable.
+- What a clone does **not** contain (gitignored): the evidence trees under `src/` (only `src/REPOS.md`
+  is tracked. It lists each upstream repo with its pinned branch and commit, so re-clone from it),
+  `logs/`, and `teach/`. The AWSIM binary and map are never in the repo.
+
 ## Ground rules for any analysis work here (load-bearing)
 
 - **The DDS vendor is Eclipse Cyclone DDS, never Fast DDS.** Target `src/cyclonedds` and
@@ -23,11 +37,16 @@ never modify them.
   discovery/reorder claims are therefore verifiable `[code]` findings cited as `path:line`, **not**
   `[UNVERIFIED]` vendor guesses. Only tag `[UNVERIFIED]`: AWSIM's own client surface (`ros2cs`, absent
   from checkout), RTPS byte-layout (`[spec]`), and anything that would require *running* the sim or a
-  packet capture (the sim is not executable in this environment).
+  packet capture that has not actually been observed on the lab PC (the sim is not executable anywhere
+  else).
 - **Cite every non-obvious claim** as `path:line` against real files under `src/`. Evidence tags used
-  throughout: `[code]` / `[spec]` / `[INFERRED]` / `[UNVERIFIED]`.
-- The **authoritative runtime configuration** (the sim can't be run) lives in
-  `prompts/autoware-core-awsim-setup-guide.md`; cite it as `setup-guide §N`.
+  throughout: `[code]` / `[spec]` / `[INFERRED]` / `[UNVERIFIED]`, plus `[runtime]` for something
+  observed on the live sim on the lab PC. A `[runtime]` finding must state the command run, the date,
+  and what was running (e.g. AWSIM only vs the full Autoware stack). See the addendum in
+  `reports/poc-recon.md`. Earlier reports predate this tag and do not use it.
+- The **authoritative runtime configuration** lives in `prompts/autoware-core-awsim-setup-guide.md`;
+  cite it as `setup-guide §N`. Do not renumber its sections (reports cite them). Record lab-PC
+  deviations in `lab-machine-setup.md` instead.
 - Two topics ground every finding: `/system/operation_mode/state` and `/control/command/gear_cmd`, both
   published `transient_local`. Domain 0, loopback (`lo`), multicast discovery.
 
@@ -69,6 +88,9 @@ Prereqs: `claude` on PATH and authenticated; the repos cloned under `src/`; prom
   shared glossary + cross-ref check). Also `wiki.md` (~1060-line full narrative — the source of record for
   citations) and `wiki_summary.md` (condensed quick-read version).
 - `source-code-study-summary.md` — top-level English summary of the whole study.
+- `lab-machine-setup.md` — how AWSIM was set up and verified on the lab PC (`ml-XPS-8960`, no sudo).
+  It is a delta on the setup guide: flattened unzip paths, config copied from the image, verification
+  checks.
 - `src/` — cloned upstream evidence: `cyclonedds`, `rmw_cyclonedds`, `rclcpp`, `rcl`, `rmw`,
   `rmw_dds_common`, the `*_msgs` / `*_interfaces` packages, and `awsim` (assets + `cyclonedds_config.xml`).
   Read-only; branches: rclcpp/rcl/rmw/rmw_cyclonedds @humble, cyclonedds @0.10.x.
