@@ -3,7 +3,8 @@
 **Phase 1, step 1 of the SEU attacker-PoC roadmap** (`~/.claude/plans/concurrent-questing-matsumoto.md`).
 Static source recon only — no sim, ROS 2, or DDS process was run. Every row is cited `path:line`
 against files under `src/`. Evidence tags per the study convention (`[code]` / `[spec]` /
-`[INFERRED]` / `[UNVERIFIED]`).
+`[INFERRED]` / `[UNVERIFIED]`). A later live check against the running sim is appended as
+§"Runtime verification (addendum)"; its findings carry the tag `[runtime]`.
 
 ## Headline (the load-bearing unknown, resolved)
 
@@ -88,11 +89,38 @@ too (the target table did not state the publisher's durability).
 - **Type discovery: hash vs name-only** — whether SEDP matching needs a type *hash* or only the
   type-name string depends on how this build was compiled (`q_qosmatch.c:216-267`); `[UNVERIFIED]`,
   wiki §2.4/§10. Affects Module 1's discovery forgery and Carrier B.
-- **On-wire confirmation of the decoded QoS fingerprint** — `ros2 topic info -v
-  /vehicle/status/velocity_status` + a tshark RTPS/SEDP capture on `lo` should show every endpoint
-  as RELIABLE + VOLATILE, corroborating the static decode above. `[UNVERIFIED]` (runtime-only).
+- **On-wire confirmation of the decoded QoS fingerprint** — *partially settled, see addendum.*
+  `ros2 topic info -v` confirms the **AWSIM publisher** as RELIABLE + VOLATILE + KEEP_LAST(1)
+  `[runtime]`. Still open: the Autoware-side **reader** endpoints (the stack was not launched) and
+  the tshark RTPS/SEDP capture on `lo`. `[UNVERIFIED]` for those parts.
 - **DDS Security compiled in?** — flips the participant-kill guard (not the endpoint withdrawal);
   wiki §7.1/§10. `[UNVERIFIED]`, inspect the built lib.
+
+## Runtime verification (addendum, 2026-09-16)
+
+`[runtime]` = observed on the live system, not read from source. Environment: lab machine, Ubuntu
+22.04.5, RTX 3060 / driver 535, AWSIM **Demo-Lightweight v2.0.1** (URP) on the host, Autoware
+`ghcr.io/autowarefoundation/autoware:core-humble` in Docker `--net host`; both sides
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, identical `cyclonedds.xml` (host copy taken verbatim from the
+image's `/home/aw/cyclonedds.xml`), domain 0 on `lo` — i.e. the setup-guide §4/§6 configuration.
+**Only AWSIM was running**; the Autoware Core stack (§6c) was not launched.
+
+| Check | Observed | Confirms |
+|---|---|---|
+| `ros2 topic info -v /vehicle/status/velocity_status` (host) | one endpoint: `Node name: AWSIM`, `PUBLISHER`, **Reliability RELIABLE, History KEEP_LAST (1), Durability VOLATILE** | Publisher QoS row above — the integer decode (`_durabilityPolicy: 2` = VOLATILE, `rmw/types.h:408-417`) is correct. `[code]` → `[runtime]` |
+| `ros2 topic info -v /control/command/gear_cmd` (inside the container) | AWSIM endpoint `SUBSCRIPTION`, **Durability TRANSIENT_LOCAL** | The asymmetry section: AWSIM command inputs are `transient_local` (`AccelVehicleRos2Input.cs:43-46`; `_durabilityPolicy: 1` = TRANSIENT_LOCAL). `[runtime]` |
+| `ros2 topic hz /clock`, host and container | ~98 Hz on both sides | Host↔container Cyclone discovery over `lo` works with this config (setup-guide §6d) — a precondition for the Phase 1 steps 2–3 captures |
+
+**What this does *not* settle:**
+
+- **Reader-side QoS of the speed consumers (Consumers 1–4)** — they are Autoware nodes and were
+  not running, so the VOLATILE headline is still backed by `[code]` for the readers. The publisher
+  being VOLATILE at runtime keeps the `[INFERRED]` cross-check in the headline valid: a
+  `transient_local` reader would not match it (`q_qosmatch.c:167`).
+- **The wire view.** `ros2 topic info` reports QoS as rmw sees it, not RTPS bytes. The tshark
+  SEDP capture on `lo` is still open.
+- **The writer GUID, participant GUID prefixes, type-hash-vs-name, and DDS Security** — all still
+  open (see Open items).
 
 *(No PoC/attack code in this document — recon only.)*
 

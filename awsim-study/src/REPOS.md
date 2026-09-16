@@ -30,33 +30,32 @@ append `&& git -C <dir> checkout <commit>` if you need the exact commit above.
 
 ```bash
 # Autoware Core meta-repo
-git clone https://github.com/autowarefoundation/autoware.git autoware
+git clone https://github.com/autowarefoundation/autoware.git autowarefoundation/autoware
 
 # ADAPI message definitions (operation_mode/state, etc.)
-git clone https://github.com/autowarefoundation/autoware_adapi_msgs.git autoware_adapi_msgs
+git clone https://github.com/autowarefoundation/autoware_adapi_msgs.git autowarefoundation/autoware_adapi_msgs
 
 # Autoware message definitions (gear_cmd, etc.)
-git clone https://github.com/autowarefoundation/autoware_msgs.git autoware_msgs
+git clone https://github.com/autowarefoundation/autoware_msgs.git autowarefoundation/autoware_msgs
 
 # AWSIM simulator (assets + cyclonedds_config.xml)
-git clone https://github.com/autowarefoundation/AWSIM.git awsim
+git clone https://github.com/autowarefoundation/AWSIM.git autowarefoundation/awsim
 ```
 
 ### Eclipse Cyclone DDS (the DDS vendor for this study)
-
 ```bash
-git clone --branch releases/0.10.x https://github.com/eclipse-cyclonedds/cyclonedds.git cyclonedds
+git clone --branch releases/0.10.x https://github.com/eclipse-cyclonedds/cyclonedds.git eclipse-cyclonedds/cyclonedds
 ```
 
 ### ROS 2 middleware stack (all `humble`)
 
 ```bash
-git clone --branch humble https://github.com/ros2/rcl.git rcl
-git clone --branch humble https://github.com/ros2/rclcpp.git rclcpp
-git clone --branch humble https://github.com/ros2/rcl_interfaces.git rcl_interfaces
-git clone --branch humble https://github.com/ros2/rmw.git rmw
-git clone --branch humble https://github.com/ros2/rmw_cyclonedds.git rmw_cyclonedds
-git clone --branch humble https://github.com/ros2/rmw_dds_common.git rmw_dds_common
+git clone --branch humble https://github.com/ros2/rcl.git ros2/rcl
+git clone --branch humble https://github.com/ros2/rclcpp.git ros2/rclcpp
+git clone --branch humble https://github.com/ros2/rcl_interfaces.git ros2/rcl_interfaces
+git clone --branch humble https://github.com/ros2/rmw.git ros2/rmw
+git clone --branch humble https://github.com/ros2/rmw_cyclonedds.git ros2/rmw_cyclonedds
+git clone --branch humble https://github.com/ros2/rmw_dds_common.git ros2/rmw_dds_common
 ```
 
 ## Not in this checkout
