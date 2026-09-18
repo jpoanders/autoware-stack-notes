@@ -3,7 +3,10 @@ You are a technical editor and systems educator. A finished, rigorous synthesis 
 exists: a single-file study of how the AWSIM Digital-Twin demo — a ROS 2 / Autoware
 autonomous-driving simulation running over Eclipse Cyclone DDS — can be configured, shut down,
 injected into, replayed against, prioritized, and silently disabled at each layer of its
-communication stack, in service of designing a Security Enforcement Unit (SEU).
+communication stack, in service of designing a **Safety** Enforcement Unit (SEU) — an STL runtime
+monitor that derives temporal/freshness constraints from data dependencies and executes a preemptive
+safe-stop on a critical violation. (The source `reports/wiki.md` is already safety-framed; do not
+re-introduce the old "security / detect-or-block" framing. Preserve its `[LSEU-abstract]` tags.)
 
 That document was written for the study's own authors. Your job is to turn it into a **standalone,
 newcomer-accessible wiki page for publication on a research lab's public wiki**. You are NOT
@@ -22,7 +25,8 @@ load-bearing caveat.
 Read in full before editing:
 
 - `reports/wiki.md` — the existing single-document synthesis. This is your ONLY content source; every
-  fact, citation, verdict, constant, and SEU implication in your output must already appear here.
+  fact, citation, verdict, constant, and SEU closing block (STL property / trace event / safe-stop) in
+  your output must already appear here.
 
 Overwrite it in place: write the rewritten, publication-ready version back to `reports/wiki.md`.
 English throughout, regardless of the language of this prompt.
@@ -90,7 +94,7 @@ or DDS QoS:
      or presence, and how can a single element be shut down cleanly? Keep the four shutdown mechanisms
      distinct (whole-context shutdown, single-node destruction, lifecycle transition, process
      signal/kill), each with its blast radius, whether an outside element can trigger it, whether it is
-     reversible, and its observable signature.
+     reversible, and how the resulting freshness loss shows up in the trace the monitor observes.
   2. How can a process outside the simulation publish messages that legitimate nodes accept? Cover both
      carriers (an ordinary ROS 2 / rclcpp node, and a hand-forged RTPS speaker), the load-bearing
      `transient_local` durability-match requirement, and include the case of an injection that is
@@ -104,7 +108,8 @@ or DDS QoS:
      transport priority and ownership are not reachable through the ROS middleware profile) plainly.
   5. Beyond a clean shutdown, how can an element be disabled or silenced, at the protocol layer, the
      physical/transport (loopback) layer, and the application layer? Give each method's effect, whether
-     an outside element can do it, reversibility, and signature.
+     an outside element can do it, reversibility, and whether the resulting loss is silent or visible in
+     the trace.
 - **Prose for reasoning, tables for enumerable facts.** Keep the systems-paper voice. Avoid walls of
   bullets. Diagrams may stay (Mermaid for layer/sequence/state, ASCII for byte layouts) if they clarify
   and their labels are cleaned of external references.
@@ -119,10 +124,11 @@ or DDS QoS:
   `MaxMessageSize=65500B`, the two topics and their key values (mode 2 = AUTONOMOUS, command 2 = DRIVE),
   and the key sequence-number/QoS-match citations.
 - The realism caveat: loopback co-location in one domain is a simulation artifact; the SEU targets a
-  real vehicular network (a compromised ECU on automotive Ethernet or CAN) where an attacker must still
-  reach discovery and match topic/type/QoS. State it once, prominently, and honor it throughout.
-- The SEU payoff: the closing section that gathers, per mechanism, the observable detection signature or
-  the enforcement lever. Do not thin it out.
+  real vehicular network (a bus element on automotive Ethernet or CAN emitting off-nominal data, by
+  fault or compromise) whose data must still reach discovery and match topic/type/QoS to affect a
+  consumer. State it once, prominently, and honor it throughout.
+- The SEU payoff: the closing block that, per mechanism, states the STL property it implies, the trace
+  event the monitor observes, and the safe-stop decision. Do not thin it out.
 - The honest boundaries of what was and was not verified (the items that would need a live run remain
   flagged as not runtime-verified, in the new plain-language phrasing).
 </preserve_exactly>
@@ -145,6 +151,7 @@ Before finishing, verify and report:
   links to exactly one glossary definition.
 - The evidence-tag legend is redefined in self-contained, outsider-readable terms, and no spec or
   inference claim is mislabeled as confirmed code.
-- Every verdict, constant, identifier, the realism caveat, and the SEU payoff survive intact.
+- Every verdict, constant, identifier, the realism caveat, and the SEU closing block (STL property /
+  trace event / safe-stop) survive intact.
 - All in-document anchor links resolve, and the prose reads cleanly with every citation removed.
 </self_check>

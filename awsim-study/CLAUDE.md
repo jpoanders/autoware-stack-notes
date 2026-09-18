@@ -6,9 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is **not an application to build or test** — it is a *source-code research study*. It analyzes how
 the communication stack of an autonomous-driving simulation (**AWSIM + Autoware Core over Eclipse Cyclone
-DDS**) can be configured, shut down, injected into, replayed against, prioritized, and silently disabled.
-The study feeds the design of a **SEU** (Security Enforcement Unit) that would sit on a real vehicle
-network and detect or block these faults.
+DDS**) establishes the temporal/freshness constraints between components, and how that wire behavior can
+be configured, shut down, injected into, replayed against, prioritized, and silently disabled — i.e. how
+those constraints are met, degraded, or violated.
+The study feeds the design of a **SEU** (**Safety** Enforcement Unit): a lightweight, event-driven
+runtime-verification monitor that derives temporal constraints from data dependencies (actuation
+frequency + data freshness), formalizes them as Signal Temporal Logic (STL) properties, evaluates system
+traces against them, and executes a **preemptive safe-stop** when a critical constraint is violated. The
+fault-injection mechanisms the study catalogs are the **test instrument** that drives off-nominal traces
+into the system to exercise that monitor and validate its safe-stop path — not "attacks to detect."
+(Historical note: earlier drafts framed the SEU as a *Security* Enforcement Unit that detects/blocks
+adversarial faults; commit `ba9f735` reframed the report corpus to the safety/STL purpose.
+`[LSEU-abstract]` tags any claim taken from the SEU's own unpublished abstract rather than the source
+tree — never present its experimental numbers as something this static study measured.)
 
 The primary output is prose: Markdown reports under `reports/`, produced by driving Claude Code itself in
 headless mode. The `src/` trees are **read-only evidence**, cloned upstream repos that the study cites —
@@ -84,8 +94,9 @@ Prereqs: `claude` on PATH and authenticated; the repos cloned under `src/`; prom
   the master spec (the five tasks, evidence rules, quality floors); `autoware-core-awsim-setup-guide.md`
   is the runtime-config record; the others drive the wiki/synthesis passes.
 - `reports/` — the deliverables. `foundation.md` (shared stack/publish-path/matching/discovery, plus the
-  DEEP/MEDIUM/MENTION task ranking at its top), `task-{1..5}-report.md`, `00-index.md` (threat model +
-  shared glossary + cross-ref check). Also `wiki.md` (~1060-line full narrative — the source of record for
+  DEEP/MEDIUM/MENTION task ranking at its top), `task-{1..5}-report.md`, `00-index.md` (safety /
+  temporal-constraint model + STL-property catalog + shared glossary + cross-ref check). Also `wiki.md`
+  (~1060-line full narrative — the source of record for
   citations) and `wiki_summary.md` (condensed quick-read version).
 - `source-code-study-summary.md` — top-level English summary of the whole study.
 - `lab-machine-setup.md` — how AWSIM was set up and verified on the lab PC (`ml-XPS-8960`, no sudo).
@@ -97,6 +108,8 @@ Prereqs: `claude` on PATH and authenticated; the repos cloned under `src/`; prom
 - `teach/` — a self-contained `/teach` course (HTML lessons + shared `assets/course.css` & `quiz.js`,
   `reference/glossary.html`) built to help the user learn `reports/wiki.md` in order to design the SEU.
   Open lessons with `xdg-open` — they link `../assets/*` and will not render if moved standalone.
+  (Not present in every clone — gitignored. Still carries the old *security* framing and is pending its
+  own safety reframe; see the `00-index.md` follow-on list.)
 - `logs/` — per-run JSON/stderr output and `incomplete.txt`.
 
 ## The layer model (recurring vocabulary)

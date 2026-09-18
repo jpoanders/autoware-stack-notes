@@ -1,19 +1,34 @@
 ```
 <role>
 You are conducting a controlled, academic fault-injection study over the AWSIM Digital Twin Demo — a
-ROS 2 / Autoware autonomous-driving simulation — in service of a later Security Enforcement Unit
-(SEU) that will sit on the vehicular network and detect or block exactly the faults you are
-cataloguing. You are building and documenting an experimental fault-injection capability so the
-network's resilience and the SEU's detection can be tested against it.
+ROS 2 / Autoware autonomous-driving simulation — in service of a later **Safety** Enforcement Unit
+(SEU): a lightweight, event-driven runtime-verification monitor that derives temporal constraints from
+data dependencies (actuation frequency + data freshness), formalizes them as Signal Temporal Logic
+(STL) properties, evaluates system traces against them, and executes a **preemptive safe-stop** when a
+critical constraint is violated (`[LSEU-abstract]`). You are building and documenting an experimental
+fault-injection capability that serves as the **test instrument** for that monitor: it drives
+off-nominal timing/value traces into the system so the STL properties can be exercised and the
+safe-stop path validated (the abstract's "extreme fault-injection stress tests").
 
-Most of what you study is dual-use; treat it as such throughout:
-- Injection and replay (Tasks 2, 3) are ATTACKS the SEU must detect.
-- Element shutdown and its alternatives (Tasks 1, 4) are both FAULTS to inject AND candidate
-  ENFORCEMENT ACTIONS the SEU could take against a compromised element.
-- QoS prioritization (Task 5) is both an attacker lever and a way to privilege legitimate or
-  enforcement traffic.
-Every report ends by stating, from the mechanism you found, what it means for the SEU: the
-observable signature to detect, or the lever to enforce.
+The mechanisms you study are the harness, not attacks. Treat each as a way to produce a specific
+off-nominal trace, and re-point it at the STL monitor:
+- Injection and replay (Tasks 2, 3) are the FAULT-INJECTION HARNESS itself — how early/late/stale/
+  wrong-value and over-published traces are introduced to exercise freshness and rate properties
+  (Task 3 is the abstract's "100x network over-publication" stress case).
+- Element shutdown and its alternatives (Tasks 1, 4) are ways data FRESHNESS is LOST — with or without
+  a clean shutdown signal — and, at a trusted layer, candidate mechanisms by which a safe-stop could
+  actually halt a data flow.
+- QoS prioritization (Task 5) determines whether the temporal constraints can be met on the wire at
+  all, and whether the monitor can run on a resource-constrained multicore without disturbing
+  real-time tasks.
+Every report ends with the three-point closing block in <the_closing_block>: the STL property the
+mechanism implies, the trace event the monitor observes, and the safe-stop decision.
+
+(Historical note: earlier drafts framed the SEU as a *Security* Enforcement Unit detecting/blocking
+adversarial faults. That premise is corrected — the SEU is a safety/STL runtime monitor. Where a fault
+could also be induced maliciously, that is at most a one-line footnote, no longer the point. Tag any
+claim taken from the SEU's unpublished abstract `[LSEU-abstract]`; never present its experimental
+numbers as something this static study measured.)
 
 Write with the accuracy of a reference and the readability of a good systems paper: motivation before
 mechanism, a concrete worked example against a real topic before the general rule, and every
@@ -57,7 +72,7 @@ equivalents in source and the message packages):
 - `/control/command/gear_cmd` — autoware_vehicle_msgs/msg/GearCommand — DURABILITY transient_local —
   `{command: 2 (Drive)}`. HIGH-IMPACT command target.
 - `/sensing/gnss/pose_with_covariance` — geometry_msgs/msg/PoseWithCovarianceStamped — AWSIM's GNSS
-  ground truth; spoofing it is a localization attack.
+  ground truth; injecting an off-nominal value here is a localization freshness/value fault.
 - `/localization/pose_estimator/nearest_voxel_transformation_likelihood` (NVTL, localization health),
   `/localization/initialization_state` (enum: 3=INITIALIZED, 1=UNINITIALIZED),
   `/planning/route_state` (enum: 2=SET), `/tf`, `/tf_static`.
@@ -85,21 +100,23 @@ explicitly:
    (C#/ros2cs over rcl), dynamically linking the host's `/opt/ros/humble/lib` (setup guide §2). So
    the simulation contains at least two client surfaces above the same Cyclone DDS layer: Autoware's
    rclcpp (C++) nodes and AWSIM's Unity nodes. Both bottom out at Cyclone DDS on domain 0 on `lo`.
-   Note where a subscriber under attack lives (Autoware vs AWSIM), because the injected payload takes
-   effect in that client's callback path.
+   Note where the subscriber whose trace is being perturbed lives (Autoware vs AWSIM), because the
+   injected payload takes effect in that client's callback path — which is also where the monitor taps.
 
 3. CO-LOCATION IS A SIMULATION ARTIFACT — do not overclaim realism from it. Because the container is
    `--net host` and AWSIM is native, both on Cyclone domain 0 bound to `lo` with multicast, ANY host
    process that joins domain 0 on `lo` is discovered and matched with no network isolation to cross.
-   This makes injection trivial in the sim, but the SEU is being designed for a REAL vehicular network
-   (a compromised ECU on an automotive Ethernet/CAN bus). Throughout, distinguish "easy because it is
-   all on loopback in one domain" from "the attacker capability on the deployment network the sim
-   stands in for." State this distinction wherever a realism or detectability judgment depends on it.
+   This makes fault injection trivial in the sim, but the SEU is being designed for a REAL vehicular
+   network (an ECU on an automotive Ethernet/CAN bus emitting off-nominal data, whether by fault or
+   compromise). Throughout, distinguish "easy because it is all on loopback in one domain" from "the
+   fault-injection reach on the deployment network the sim stands in for." State this distinction
+   wherever a realism or observability judgment depends on it.
 
 4. AUTOWARE APPLICATION SEMANTICS DECIDE IMPACT. Injecting noise on an arbitrary topic is low-value;
    injecting a well-formed OperationModeState or GearCommand that the vehicle obeys is the meaningful
-   attack. Ground the injection and replay tasks on the real command topics above and reason about
-   what the receiving Autoware node does with the value.
+   fault — the one whose off-nominal trace actually threatens a temporal/safety constraint. Ground the
+   injection and replay tasks on the real command topics above and reason about what the receiving
+   Autoware node does with the value, and which constraint that puts at risk.
 </the_new_investigation_layer>
 
 <the_foundation_first>
@@ -151,9 +168,26 @@ PROHIBITED. Stopping at the rclcpp public API; "handles/manages/sends" with no m
 generic middleware instead of THIS Cyclone stack; carrying over Fast DDS assumptions; injection or
 disruption in the abstract instead of against a real topic; overclaiming realism from the loopback
 co-location; spec/vendor claims dressed as repo findings; undefined jargon; walls of bullets;
-treating the SEU implication as a throwaway; hedging that hides a gap (use [UNVERIFIED]); padding a
+treating the closing block (property/trace-event/safe-stop) as a throwaway, or the old security
+"signature to detect" framing; hedging that hides a gap (use [UNVERIFIED]); padding a
 section you lack evidence for (write "not investigated: reason").
 </shared_standards>
+
+<the_closing_block>
+Every mechanism section — and every report — ends by translating the mechanism into monitor terms.
+Replace any old "SEU implication / signature to detect / lever to enforce" with exactly these three
+points, drawn from the mechanism you found:
+1. THE PROPERTY. The temporal or freshness constraint the mechanism implies, written STL-shaped over
+   the real topics, with concrete bounds where the code/config gives them (mark derived bounds
+   [INFERRED]). Shapes: freshness `G( age(topic) <= Δ_fresh )`; liveness
+   `G( pub(topic) → F_[0,Δ_deadline] pub(topic) )`; rate `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )`;
+   provenance `G( writer(topic) ∈ allowlisted_GUIDs )`.
+2. THE TRACE EVENT. What the event-driven monitor actually observes to evaluate that property — the
+   observable at the layer the SEU taps (a sample's arrival timestamp and sequence number, a missed
+   deadline, a WHC stall, a foreign writer GUID appearing in SEDP) — and at which layer it is visible.
+3. THE SAFE-STOP DECISION. Whether a violation is critical enough to trigger a preemptive safe-stop,
+   or is a degradation to log/flag — and why, given the topic's role in actuation.
+</the_closing_block>
 
 <the_five_tasks>
 Order by dependency, not list order. Suggested: Task 1 → Task 2 → Task 3 → Task 5 → Task 4 (Task 4
@@ -161,9 +195,13 @@ synthesizes shutdown from 1, discovery from 2, and QoS from 5). Confirm at the s
 is a separate report and is grounded on the real topics from <system_under_study>.
 
 ──────────────────────────────────────────────────────────────────────────────
-TASK 1 — CONFIGURABLE ELEMENTS AND ELEMENT SHUTDOWN
+TASK 1 — CONFIGURABLE ELEMENTS AND ELEMENT SHUTDOWN → LIVENESS / FRESHNESS LOSS
 Enumerate, from source, the core elements that can be configured or controlled to change their
-behavior, lifetime, or presence, and document in depth how to shut ONE core element down.
+behavior, lifetime, or presence, and document in depth how to shut ONE core element down. Frame this
+as the strongest freshness violation: a source going silent is the archetypal critical fault that
+should trigger a safe-stop. Explain from the code how absence manifests and how fast it is observable
+(deadline/liveliness), and the transient_local latching hazard — a latched last sample makes a dead
+publisher look alive to a naive reader, the first-class trap for a freshness monitor.
 
 Configurable elements to confirm and cite: node parameters (rclcpp::Parameter + the parameter
 services), QoS profiles, node/context init options (NodeOptions, InitOptions, domain ID), lifecycle
@@ -182,18 +220,23 @@ Shutdown — keep these DISTINCT (the names invite conflation):
   deactivate/shutdown of a managed element. Determine whether Autoware Core here uses lifecycle nodes;
   if so, trace the service and transition — this is a major externally-reachable finding.
 - Process signals: rclcpp installs a SIGINT handler (signal_handler.cpp) that triggers shutdown;
-  killing the process is the crudest path (and, given `--net host`, an attacker with host access has
-  it trivially — but note that this is host-level, not a network capability the SEU models).
+  killing the process is the crudest path (and, given `--net host`, a host-level actor has it
+  trivially — but note that this is host-level, not a network-visible cause the freshness monitor
+  reasons about).
 - Discovery-level removal (dispose/unregister the participant) is protocol-level — cross-reference
   Task 4.
 For each: what it kills, blast radius, whether an EXTERNAL element can invoke it, clean/reversible?,
-observable signature. SEU note: which the SEU could use to disable a compromised element, which an
-attacker could abuse against a legitimate one.
+how fast the resulting silence is observable. Close with <the_closing_block>: the freshness/liveness
+property each shutdown path violates, the trace event (missed deadline / liveliness lost, or — the
+hazard — a latched transient_local sample masking the loss), and whether it warrants a safe-stop.
 
 ──────────────────────────────────────────────────────────────────────────────
-TASK 2 — DATA INJECTION FROM A THIRD-PARTY ELEMENT OUTSIDE THE SIMULATION
+TASK 2 — DATA INJECTION FROM A THIRD-PARTY ELEMENT → THE FAULT-INJECTION HARNESS
 Determine, from source, every viable way for a process outside the simulation to publish messages
-that legitimate core nodes accept, and compare the paths by realism and detectability.
+that legitimate core nodes accept, and compare the paths by realism and observability. This is the
+study's test INSTRUMENT: how off-nominal traces (early/late/stale/wrong-value samples) are introduced
+to EXERCISE the monitor — not an attack. Keep the Cyclone-compatible injector mechanics; frame them as
+the harness that drives the traces the STL properties are evaluated against.
 
 Two paths, both traced against a real command topic — use `/system/operation_mode/state` or
 `/control/command/gear_cmd` as the worked example, because these carry transient_local durability and
@@ -210,17 +253,23 @@ actually control the vehicle:
   subscribers accept. Enumerate what Cyclone requires: domain 0, SPDP/SEDP participant+endpoint
   discovery, topic-name and type matching (type hash / typeinfo as Cyclone computes it), QoS on the
   wire (including the durability offered), and CDR framing of the Autoware message. Tag the
-  Cyclone-internal and spec-derived parts. This path matters for the DEPLOYMENT threat model (a
-  compromised bus element that does not run ROS 2), which is what the SEU actually defends.
+  Cyclone-internal and spec-derived parts. This path matters for the DEPLOYMENT model (a bus element
+  that does not run ROS 2 yet emits off-nominal data), which is the trace the SEU must handle on real
+  hardware.
 At least one trace must follow a DROPPED injection — e.g. a volatile-only writer failing to match the
-transient_local reader — and explain why from the matching rules.
-SEU note: the unavoidable signature of each path — the foreign participant GUID not belonging to the
-sim, the late-joining participant on domain 0, the QoS the RTPS-path attacker had to reproduce, timing
-— these are the SEU's detection surface, and the realism caveat (loopback vs. deployment bus) frames
-how detectable each really is.
+transient_local reader — and explain why from the matching rules (an injected trace that never reaches
+the reader exercises nothing, so the harness must clear the RxO gate).
+Close with <the_closing_block>: the observables each path unavoidably leaves in the trace — the
+foreign participant GUID not belonging to the sim, the late-joining participant on domain 0, the QoS
+the RTPS path had to reproduce, arrival timing — as the monitor's provenance/timing trace events, with
+the realism caveat (loopback vs. deployment bus) framing how observable each really is.
 
 ──────────────────────────────────────────────────────────────────────────────
-TASK 3 — REPLAY / OVER-PUBLICATION VIA THE INJECTION MODULE
+TASK 3 — REPLAY / OVER-PUBLICATION VIA THE INJECTION MODULE (FLAGSHIP: RATE-CONSTRAINT STRESS)
+This is the abstract's "100x network over-publication" stress case (`[LSEU-abstract]`): an
+actuation-frequency constraint violated, and the verifier's claimed linear complexity under that load.
+Tie the wire mechanism (WHC back-pressure, sequence numbers, reorder) to what the monitor sees on the
+trace and to why evaluation stays linear.
 Determine whether the injector from Task 2 can REPLAY messages — capture legitimate messages and
 re-publish them so subscribers accept them as fresh (replay = over-publication of previously-seen
 traffic). If replay is NOT achievable, fall back to whether the injector can be made to publish
@@ -236,24 +285,29 @@ Traps that decide the answer (verify against rmw_cyclonedds / Cyclone core / RTP
 - REPLAY VIA DIRECT RTPS of captured DATA hits the reader's duplicate/stale filtering: a DDS/DDSI
   reader tracks (writer GUID, sequence number) and discards a sequence number already seen or below
   its window. Replaying verbatim — original GUID, original sequence numbers — will likely be DROPPED.
-  Find where Cyclone does this (the ddsi reader / reorder / WHC-RHC path) and state what the attacker
-  must do to succeed: forge a fresh writer GUID or advance the sequence numbers. This subtlety is the
-  core finding — do not claim replay "works" without it.
+  Find where Cyclone does this (the ddsi reader / reorder / WHC-RHC path) and state what the injector
+  must do for the replayed samples to reach the reader at all: forge a fresh writer GUID or advance the
+  sequence numbers. This subtlety is the core finding — do not claim replay "works" without it.
 - THE MULTI-PUBLISH FALLBACK: emit N samples — an rclcpp publish() loop or N RTPS DATA submessages with
   incrementing sequence numbers. Document interaction with QoS and Cyclone flow control: history depth,
   reliability and the reliable reader's ACKNACK, the `WhcHigh=500kB` write-history-cache watermark from
   the guide (back-pressure under flooding), DEADLINE, LIFESPAN — and the subscriber's executor/callback
   queue behavior under flooding. Cross-reference Task 5.
-SEU note: replay signature (duplicate payloads, sequence-number anomalies, content reuse under a
-foreign GUID) and over-publication signature (per-topic rate anomaly, DEADLINE violations) — both
-detection surfaces.
+Close with <the_closing_block>: the rate property `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )`
+and the freshness property replay stresses; the trace events (duplicate payloads, sequence-number
+anomalies, content reuse under a foreign GUID; per-topic rate anomaly, DEADLINE violations); and why
+the monitor's evaluation of these stays linear even under 100× over-publication (`[LSEU-abstract]`),
+plus the safe-stop threshold for a sustained rate violation on an actuation topic.
 
 ──────────────────────────────────────────────────────────────────────────────
-TASK 4 — ALTERNATIVES TO SHUTDOWN: DISABLING AN ELEMENT AT THREE LAYERS
+TASK 4 — ALTERNATIVES TO SHUTDOWN: DISABLING AT THREE LAYERS → SILENT FRESHNESS LOSS + SAFE-STOP ACTUATION
 Catalogue the ways to disable or silence a core element OTHER than the clean shutdown of Task 1, across
-three explicitly named layers. Synthesis task — draw on Task 1 (application path), Task 2 (discovery),
-Task 5 (QoS); cross-reference rather than re-derive. For each method: what it disrupts, whether an
-external element on domain 0 can do it, reversibility, observable signature.
+three explicitly named layers. The three layers are both (a) ways data freshness is lost WITHOUT a
+clean shutdown signal — the hardest case for a monitor, because nothing announces the loss — and
+(b) candidate mechanisms by which a safe-stop could actually halt a data flow at a trusted layer.
+Synthesis task — draw on Task 1 (application path), Task 2 (discovery), Task 5 (QoS); cross-reference
+rather than re-derive. For each method: what it disrupts, whether an external element on domain 0 can
+do it, reversibility, and how the resulting silence appears (or fails to appear) in the trace.
 
 PROTOCOL LEVEL (DDS / RTPS):
 - Inject a participant/endpoint DISPOSE or UNREGISTER via SEDP so peers believe the target endpoint is
@@ -277,16 +331,19 @@ APPLICATION LEVEL:
 - The clean paths from Task 1 (lifecycle deactivate/shutdown request on domain 0, a parameter change
   that disables behavior, a command topic the node obeys). Cross-reference Task 1; add only what is new.
 
-SEU note: each method doubles as an authorized enforcement action (the SEU disabling a compromised
-element) and an attack (against a legitimate one) — state the asymmetry (the SEU is authorized and can
-act at a trusted layer; the attacker must forge) and which layer the SEU is best positioned to act at
-on the deployment network.
+Close with <the_closing_block>: the freshness property each method violates and — crucially — whether
+the loss is SILENT (no clean shutdown event in the trace, so the monitor must infer staleness from age
+alone) or announced; and, separately, which layer a safe-stop is best positioned to act at to halt a
+flow on the deployment network (the SEU acts at a trusted layer; a mere fault source cannot).
 
 ──────────────────────────────────────────────────────────────────────────────
-TASK 5 — QoS CONFIGURATION IN CYCLONE DDS FOR MESSAGE PRIORITIZATION
+TASK 5 — QoS CONFIGURATION IN CYCLONE DDS → TIMING DETERMINISM & MIXED-CRITICALITY
 Determine, from source, how Cyclone DDS QoS can be configured to prioritize messages, and — the
 layer-crossing that matters — how much is reachable through rclcpp versus only through Cyclone
-configuration.
+configuration. Frame it as: whether the temporal constraints can be met on the wire at all. How
+Cyclone QoS (deadline, latency budget, priority, history/WHC) shapes latency and jitter decides
+whether a freshness/rate property is even satisfiable, and what running the monitor itself on a
+resource-constrained multicore RISC-V costs the real-time tasks around it (`[LSEU-abstract]`).
 
 Traps to resolve against code:
 - TRANSPORT_PRIORITY is the DDS policy most directly about prioritization. Read the rmw QoS profile
@@ -304,9 +361,11 @@ Traps to resolve against code:
 - LATENCY_BUDGET, DEADLINE, and the reliability/history interaction on effective latency and delivery
   order. Distinguish true prioritization from latency shaping.
 Table: QoS policy | what it controls | reachable via rclcpp? | reachable via Cyclone config? | relevance
-to prioritization | relevance to injection/SEU.
-SEU note: using priority/ownership-strength to privilege enforcement traffic (if Cyclone supports it);
-detecting an attacker who sets high priority or ownership strength to dominate a topic.
+to prioritization | relevance to whether the temporal constraint is satisfiable.
+Close with <the_closing_block>: which QoS settings make a topic's freshness/rate property achievable vs.
+unachievable on the wire (the property's feasibility precondition); what the monitor observes as latency
+budget / deadline configuration in the trace; and how to schedule the monitor so its own evaluation does
+not perturb the very timing it verifies on a mixed-criticality multicore (`[LSEU-abstract]`).
 </the_five_tasks>
 
 <execution_protocol>
@@ -320,7 +379,7 @@ new territory, and the exact files to open for it; present the task ordering and
 plan. Only then proceed.
 PHASE 2 — EXECUTE tasks in dependency order, one at a time, finishing each report before the next.
 Open only new-territory files; follow the section shape from <shared_standards>; ground each task in
-the real topics; end with the SEU note.
+the real topics; end with <the_closing_block>.
 PHASE 3 — CROSS-REPORT PASS: build the shared glossary; verify cross-references resolve, terminology is
 consistent, and nothing is re-derived; produce the index/README.
 PHASE 4 — SELF-AUDIT against <self_audit>, reported honestly.
@@ -330,15 +389,19 @@ open, glossary so far, pending [UNVERIFIED] items.
 
 <output_specification>
 Deliver FIVE reports plus a short index — six Markdown files (or six clearly delimited sections).
-INDEX/README: objective and threat model (controlled academic setting; the AWSIM/Cyclone/loopback
-topology; the external element; the SEU as end goal, defending a real vehicular network the sim stands
-in for); the task list with one-line summaries and dependencies; the shared glossary; a pointer to the
-foundation section.
+INDEX/README: objective and SAFETY / TEMPORAL-CONSTRAINT model (controlled academic setting; the
+AWSIM/Cyclone/loopback topology standing in for a real AV network whose data dependencies impose
+temporal constraints; the external element as fault-injection instrument; the SEU as end goal, an
+STL runtime monitor that safe-stops on a critical violation). Its central artifact is a CATALOG of the
+temporal/freshness (STL-shaped) properties the study surfaces, cross-referenced to the mechanism that
+establishes each — not a catalog of attacks. Plus the task list with one-line summaries and
+dependencies; the shared glossary; a pointer to the foundation section.
 EACH REPORT: (1) objective and scope, and what it excludes; (2) Foundation — what it reuses (by
 reference) and what new territory it opened; (3) Mechanism — DEEP, layered, cited, grounded in the real
 topics, with required diagrams; (4) for Task 3, the replay-feasibility finding and, only if blocked,
-the multi-publish fallback with the reason; (5) SEU implications drawn from the mechanism (not generic
-security commentary), including the loopback-vs-deployment realism caveat where relevant; (6) Appendix —
+the multi-publish fallback with the reason; (5) <the_closing_block> — the STL property, the trace
+event, and the safe-stop decision drawn from the mechanism (not generic commentary), including the
+loopback-vs-deployment realism caveat where relevant; (6) Appendix —
 files opened; [INFERRED]/[UNVERIFIED] findings with what would settle them; per-section confidence
 HIGH/MEDIUM/LOW with a reason for anything lower (expect wire-/Cyclone-level sections to be lower where
 vendor source is absent). Keep audit material in the appendix — but keep it, and keep it honest.
@@ -359,9 +422,11 @@ vendor source is absent). Keep audit material in the appendix — but keep it, a
       application layers, each with reachability, reversibility, signature.
 - [ ] Task 5 states which QoS policies rclcpp exposes vs. need Cyclone config, with TRANSPORT_PRIORITY
       and Cyclone's OWNERSHIP support resolved against the actual struct/source.
-- [ ] The loopback co-location is never used to overclaim realism; the deployment threat model is
-      distinguished wherever a realism/detectability judgment depends on it.
-- [ ] Every report ends with an SEU implication from its own mechanism.
+- [ ] The loopback co-location is never used to overclaim realism; the deployment model (a real bus
+      element emitting off-nominal data) is distinguished wherever a realism/observability judgment
+      depends on it.
+- [ ] Every report ends with <the_closing_block> — STL property, trace event, safe-stop decision —
+      derived from its own mechanism; no leftover "signature to detect / lever to enforce" framing.
 - [ ] Cross-references resolve; glossary complete; no term used before defined; STRIP and NEWCOMER tests
       pass on three sampled sections (quote them).
 - [ ] Scan for prohibited patterns and report every instance, fixed or not.

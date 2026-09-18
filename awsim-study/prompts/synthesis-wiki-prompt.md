@@ -5,8 +5,10 @@ autonomous-driving simulation over Eclipse Cyclone DDS). Your job is NOT to re-i
 Your job is to SYNTHESIZE the five task results plus their shared foundation into ONE self-contained
 wiki document, in English, that reads as a single coherent reference rather than six stapled reports.
 
-You are editing, not researching. Every fact, citation, verdict, and SEU implication in your output
-must already be present in the source documents. You may re-organize, merge, de-duplicate, re-title,
+You are editing, not researching. Every fact, citation, verdict, and SEU closing block (STL property /
+trace event / safe-stop) in your output must already be present in the source documents, which are
+already safety-framed — do not re-introduce the old security "detect or block" framing, and preserve
+their `[LSEU-abstract]` tags. You may re-organize, merge, de-duplicate, re-title,
 cross-link, and tighten prose. You may NOT invent new findings, add new file:line citations that are
 not in the sources, soften a verdict, or drop a load-bearing caveat. If two sources disagree, surface
 the disagreement rather than smoothing it (the index already logs the known ones).
@@ -15,8 +17,9 @@ the disagreement rather than smoothing it (the index already logs the known ones
 <inputs>
 All inputs live under `reports/` in the working directory. Read every one in full before writing:
 
-- `reports/00-index.md` — orientation, objective, threat model, the one shared glossary, dependency
-  graph, and the cross-report consistency notes. This is your map and your glossary source of truth.
+- `reports/00-index.md` — orientation, objective, safety / temporal-constraint model (the STL-property
+  catalog), the one shared glossary, dependency graph, and the cross-report consistency notes. This is
+  your map and your glossary source of truth.
 - `reports/foundation.md` — the shared stack derivation every task reuses (layer map, publish path,
   delivery-matching rules, discovery, seed glossary).
 - `reports/task-1-report.md` — configurable elements and element shutdown.
@@ -40,11 +43,12 @@ Structure it as a wiki, not a concatenation:
 
 1. A single title and a one-paragraph abstract of the whole study.
 2. A table of contents with in-document anchor links to every major section.
-3. A "How to read this" / scope-and-threat-model section, distilled from the index §1: the objective,
+3. A "How to read this" / scope-and-safety-model section, distilled from the index §1: the objective,
    the concrete topology, the two worked command targets (`/system/operation_mode/state` mode 2, and
-   `/control/command/gear_cmd` command 2), the external-attacker definition, and the realism caveat
-   (loopback co-location is a simulation artifact; the SEU targets a real vehicular network). This
-   caveat binds the whole document — state it once, prominently, then reference it.
+   `/control/command/gear_cmd` command 2), the external element as fault-injection instrument (not an
+   attacker), and the realism caveat (loopback co-location is a simulation artifact; the SEU targets a
+   real vehicular network whose data dependencies impose temporal constraints). This caveat binds the
+   whole document — state it once, prominently, then reference it.
 4. A "Foundation" section that presents the shared stack ONCE: the layer map (rclcpp → rcl → rmw →
    rmw_cyclonedds_cpp → Cyclone DDS core → RTPS), the publish path to the wire (CDR, the sequence
    number `++wr->seq`, the WHC), the delivery-matching rules (topic-name mangling, type matching, the
@@ -58,15 +62,16 @@ Structure it as a wiki, not a concatenation:
    sections rather than repeating them.
 6. A single consolidated glossary, taken from the index §3 — every term defined exactly once, in one
    place, with the rest of the document linking to it. Do not let two sections define the same term.
-7. A short closing section that gathers the SEU implications across all five tasks into one place: for
-   each mechanism, the observable signature to detect or the lever to enforce. This is the payoff of
+7. A short closing section that gathers the SEU closing blocks across all five tasks into one place —
+   the consolidated STL-property catalog: for each mechanism, the temporal/freshness property it
+   implies, the trace event the monitor observes, and the safe-stop decision. This is the payoff of
    the whole study — do not treat it as a throwaway.
 </output>
 
 <synthesis_rules>
 - SYNTHESIZE, don't staple. Where several reports touch the same fact (the durability gate, the
   reorder admin, the WHC watermark, the discovery ports), state it once in the foundation or glossary
-  and cross-reference. Merge overlapping SEU notes into the closing section. The output should be
+  and cross-reference. Merge overlapping SEU closing blocks into the closing section. The output should be
   noticeably shorter than the sum of the six inputs because redundancy is removed — not because
   substance is dropped.
 - PRESERVE every load-bearing detail: exact identifiers, constants, type names, QoS enum values and

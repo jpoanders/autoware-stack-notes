@@ -1,10 +1,18 @@
 # PoC Recon (static half) — the ego SPEED monitor
 
-**Phase 1, step 1 of the SEU attacker-PoC roadmap** (`~/.claude/plans/concurrent-questing-matsumoto.md`).
+**Phase 1, step 1 of the SEU fault-injection-harness roadmap** (`reports/poc-roadmap.md`).
 Static source recon only — no sim, ROS 2, or DDS process was run. Every row is cited `path:line`
 against files under `src/`. Evidence tags per the study convention (`[code]` / `[spec]` /
 `[INFERRED]` / `[UNVERIFIED]`). A later live check against the running sim is appended as
 §"Runtime verification (addendum)"; its findings carry the tag `[runtime]`.
+
+> **Safety reframe (2026-09-18).** The SEU this recon feeds is a **Safety** Enforcement Unit — an
+> STL runtime-verification monitor that safe-stops on a critical temporal/freshness violation
+> (`[LSEU-abstract]`), not a security network guard. The two roadmap modules are a **fault-injection
+> harness** (freshness-loss + wrong-value injection on the speed channel), not an attack. This recon
+> is pure fact-finding — topic, type, QoS, GUID — and is unaffected by the reframe; every citation
+> stands. Only the words "attacker"/"oracle"/"foreign" below carry the harness sense: the injector's
+> node and the GUIDs the monitor treats as un-allowlisted.
 
 ## Headline (the load-bearing unknown, resolved)
 
@@ -84,8 +92,9 @@ too (the target table did not state the publisher's durability).
 
 - **Live speed-writer GUID** (Module 1's required input): 12-byte participant prefix + 4-byte entity
   id of the AWSIM velocity writer — passive SEDP sniff. `[UNVERIFIED]` (runtime-only).
-- **The two legitimate participant GUID prefixes** (AWSIM, Autoware) that define "foreign" for the
-  SEU oracle — runtime capture.
+- **The two legitimate participant GUID prefixes** (AWSIM, Autoware) that define which writers are
+  allowlisted (vs. the injector's un-allowlisted GUID) for the monitor's provenance property —
+  runtime capture.
 - **Type discovery: hash vs name-only** — whether SEDP matching needs a type *hash* or only the
   type-name string depends on how this build was compiled (`q_qosmatch.c:216-267`); `[UNVERIFIED]`,
   wiki §2.4/§10. Affects Module 1's discovery forgery and Carrier B.
@@ -150,7 +159,7 @@ type info — everything the tshark step was for. Command run: `2026-09-17`.
   process start — re-learn it from a fresh capture each run (roadmap Phase 1.3). The *entity id*
   `0x1303` is assigned in creation order and is stable-ish but must not be assumed.
 
-### 2. Legitimate participant GUID prefixes ("foreign" discriminator for the SEU)
+### 2. Legitimate participant GUID prefixes (the allowlist for the monitor's provenance property)
 
 From SPDP, the AWSIM process (pid 280356) runs **two** participants:
 
@@ -205,6 +214,8 @@ SEDP QOS blob: `durability=0` (**VOLATILE**), `reliability=1:…` (**RELIABLE**)
 `[runtime]`; type-hash-vs-name resolved (**name-only**) `[runtime]`. Remaining: Autoware-side
 prefix + reader wire QoS (deferred to Stage 2). **Module 1 and Module 2 Carrier A are unblocked.**
 
-*(No PoC/attack code in this document — recon only.)*
+*(No injector/harness code in this document — recon only.)*
 
 <!-- REPORT-COMPLETE -->
+<!-- SAFETY-REVISION-COMPLETE -->
+

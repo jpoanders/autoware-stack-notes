@@ -311,22 +311,28 @@ neither changes any behavioral claim.
 ## 7. Out of scope — follow-on safety-reframe work
 
 This revision sweep reframed only the six study documents (foundation, the five task reports, and this
-index; plus `wiki.md`, `wiki_summary.md`, and `source-code-study-summary.md`). The following still
-carry the **old Security-Enforcement-Unit framing** and each needs its own safety reframe as separate
-follow-on work — they were deliberately **not** touched here:
+index; plus `wiki.md`, `wiki_summary.md`, and `source-code-study-summary.md`). A **follow-on reframe
+pass (2026-09-18)** then re-pointed the PoC line and the generator prompts at the safety/STL purpose.
+Status below.
 
-- **`teach/`** — the self-contained `/teach` course (HTML lessons + quiz) built to learn `wiki.md`. Its
+**Reframed in the 2026-09-18 follow-on pass (done):**
+- **The PoC line** — `poc-roadmap.md` and `poc-recon.md` are recast from a "kill + spoof attacker"
+  PoC to a **fault-injection harness** that drives freshness-loss and wrong-value traces to exercise
+  the STL monitor and validate its safe-stop path (both carry `<!-- SAFETY-REVISION-COMPLETE -->`).
+- **`CLAUDE.md`** — the repository description and ground rules now define the SEU as a **Safety**
+  Enforcement Unit (STL/safe-stop) and frame the fault mechanisms as the test instrument.
+- **The generator/synthesis prompts** — `awsim-fault-injection-five-tasks-prompt.md`,
+  `publish-ready-wiki-prompt.md`, `synthesis-wiki-prompt.md`, and
+  `awsim-close-autoware-open-questions-prompt.md` are re-pointed at the safety/STL spine (the new
+  three-point closing block: STL property / trace event / safe-stop), so a fresh run produces
+  safety-framed output directly.
+
+**Still carrying the old Security-Enforcement-Unit framing (not reachable from every clone):**
+- **`teach/`** — the self-contained `/teach` course (gitignored; absent from clones without it). Its
   lessons still teach the SEU as a network guard and must be re-cut to the STL-monitor / safe-stop
   narrative, in lesson order, once the wiki reframe settles.
-- **The attacker-PoC line** — the `awsim-seu-poc-roadmap` memory and `poc-recon.md`. Framed as building
-  a kill+spoof attack against the ego-speed monitor; the whole line needs recasting as a
-  fault-injection *harness* that drives off-nominal traces to validate the safe-stop path (its own
-  reframe, not a marker swap).
-- **`CLAUDE.md`** — the repo's project instructions still describe a Security Enforcement Unit and a
-  security/threat objective; the ground rules there should be re-pointed at the safety/STL purpose.
-- **The master five-tasks prompt** (`prompts/awsim-fault-injection-five-tasks-prompt.md`) — still
-  specifies the tasks around attacks/enforcement and the old closing block; the generator spec should
-  be updated so a fresh run produces safety-framed reports directly.
+- **The `awsim-seu-poc-roadmap` memory** — lives per-machine outside the repo; still attacker-framed
+  where present. Update it wherever the memory store is available.
 - **`run-study.sh`** — the orchestrator and its completion-marker contract (`<!-- REPORT-COMPLETE -->`)
   are unchanged; if the safety framing becomes the canonical generation target, the runner and its
   markers should be aligned with this sweep's `<!-- SAFETY-REVISION-COMPLETE -->` convention.

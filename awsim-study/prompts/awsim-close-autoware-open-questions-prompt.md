@@ -1,9 +1,12 @@
 ```
 <role>
 You are continuing the controlled, academic fault-injection study over the AWSIM Digital Twin Demo (a
-ROS 2 / Autoware / Eclipse Cyclone DDS autonomous-driving simulation) that underpins a later Security
-Enforcement Unit (SEU) which will sit on the vehicular network and detect or block the catalogued
-faults. The five-task study is COMPLETE. Its outputs live in `reports/`: a shared `foundation.md`,
+ROS 2 / Autoware / Eclipse Cyclone DDS autonomous-driving simulation) that underpins a later **Safety**
+Enforcement Unit (SEU): an STL runtime-verification monitor that derives temporal/freshness constraints
+from data dependencies and executes a preemptive safe-stop on a critical violation (`[LSEU-abstract]`).
+The catalogued faults are the instrument that drives off-nominal traces to exercise that monitor, not
+attacks it must block. (The `reports/` corpus is already safety-framed; do not re-introduce the old
+security framing.) The five-task study is COMPLETE. Its outputs live in `reports/`: a shared `foundation.md`,
 five task reports (`task-1-report.md` … `task-5-report.md`), an index (`00-index.md`), and the
 consolidated wiki `reports/wiki.md`. Your job is NOT to re-run the study. Your job is a narrow closure
 pass: resolve the specific open questions that the study could only leave `[UNVERIFIED]` /
@@ -43,8 +46,8 @@ examples, both carrying DURABILITY transient_local:
 - `/system/operation_mode/state` — autoware_adapi_v1_msgs/msg/OperationModeState —
   `{mode: 2 (autonomous), is_autoware_control_enabled: true, is_autonomous_mode_available: true}`.
 
-For each, the question is about the READER that receives and acts on the value (the node under attack),
-not the publisher. From the Autoware source, identify the node(s) that SUBSCRIBE to each of these
+For each, the question is about the READER that receives and acts on the value (the node whose trace
+the monitor watches), not the publisher. From the Autoware source, identify the node(s) that SUBSCRIBE to each of these
 topics and consume the value, and answer the questions below for those subscribing nodes. If a topic
 has several relevant consumers, pick the one whose callback actually drives vehicle behaviour and name
 it; note the others briefly. Report node package + file:line for every claim.
@@ -141,11 +144,13 @@ NOT edit any other file. Concretely:
   "unavailable" caveat and adding the now-known Autoware-side fact.
 - Glossary: update the "Lifecycle node" entry's "Whether Autoware uses these is `[UNVERIFIED]`" clause
   to reflect the verdict for the command-topic owners.
-- End each materially changed passage the way the document does: with the SEU implication drawn from
-  the newly-settled fact (e.g. "the clean `change_state` lever is unavailable against these nodes, so
-  the SEU must fall back to X"; or "the application accepts a replayed command as fresh, so replay
-  detection cannot be left to the app"). Preserve the loopback-vs-deployment realism caveat wherever a
-  detectability judgment depends on it. Do not add generic security commentary.
+- End each materially changed passage the way the document does: with the SEU closing block (the STL
+  property, the trace event the monitor observes, and the safe-stop decision) drawn from the
+  newly-settled fact (e.g. "these nodes read the command VOLATILE, so a freshness property must be
+  evaluated on arrival age, not on a latched last sample"; or "the application accepts a replayed
+  command as fresh, so the monotonic-sequence check must live in the monitor, not the app"). Preserve
+  the loopback-vs-deployment realism caveat wherever an observability judgment depends on it. Do not
+  add generic commentary.
 - Keep the strip test passing: the prose must read cleanly if every `file:line` citation were removed.
 - Match the existing citation style precisely (`path/file.ext:LINE` with an evidence tag at clause end).
 </output>
@@ -163,7 +168,8 @@ NOT edit any other file. Concretely:
       labelled as confirmations, not new derivations.
 - [ ] Every in-text reference to the four questions is updated — no orphaned "sources not available"
       hedge remains anywhere in the document.
-- [ ] Each changed passage ends with an SEU implication drawn from the newly-settled mechanism.
+- [ ] Each changed passage ends with the SEU closing block (STL property / trace event / safe-stop)
+      drawn from the newly-settled mechanism.
 - [ ] Only `reports/wiki.md` was modified.
 - [ ] Report, at the end, a short changelog: which rows/sections changed, the key file:line evidence
       for each verdict, and any question that could only be partially settled and why.
