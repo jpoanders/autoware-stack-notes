@@ -122,6 +122,89 @@ image's `/home/aw/cyclonedds.xml`), domain 0 on `lo` — i.e. the setup-guide §
 - **The writer GUID, participant GUID prefixes, type-hash-vs-name, and DDS Security** — all still
   open (see Open items).
 
+## Runtime verification (addendum 2, 2026-09-17 — SEDP wire capture)
+
+`[runtime]` = observed on the live system. Environment: lab machine `ml-XPS-8960`, same as
+addendum 1 — AWSIM **Demo-Lightweight v2.0.1** (URP, pid 280356) running on the host; the Autoware
+container was up but **the Autoware Core stack was not launched** (`ros2 node list` → only `/AWSIM`,
+`/RobotecGPULidar`). `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, domain 0 on `lo`.
+
+**Method (no tshark / no sudo).** tshark is not installed on this host and installing/capturing
+needs root, so the SEDP wire view was taken with **Cyclone DDS's own tracing** instead (the roadmap's
+named substitute): a throwaway config identical to `~/cyclonedds.xml` plus
+`<Tracing><Category>discovery,plist</Category></Tracing>`, then a short-lived subscriber
+(`ros2 topic echo --no-daemon /vehicle/status/velocity_status …`, ~8 s) whose participant provoked
+SPDP/SEDP from the live peers. The trace decodes each announcement's raw PIDs, GUIDs, full QoS and
+type info — everything the tshark step was for. Command run: `2026-09-17`.
+
+### 1. Live speed-writer GUID (Module 1's required input) — captured
+
+- **GUID = `0110d7fa:ca3be3a4:1fc8049a:00001303`** (12-byte participant prefix
+  `01 10 d7 fa ca 3b e3 a4 1f c8 04 9a` + 4-byte entity id `00 00 13 03`). `[runtime]`
+- Confirmed two independent ways: `ros2 topic info -v` GID
+  `01.10.d7.fa.ca.3b.e3.a4.1f.c8.04.9a.00.00.13.03.…`, **and** the SEDP publication's
+  `PID_ENDPOINT_GUID` (0x5a) byte-for-byte identical.
+- Entity-id low byte `0x03` = `ENTITYID_KIND_WRITER_WITH_KEY` — a **keyed** user writer, consistent
+  with the keyed dispose Module 1 forges. `[spec]`/`[runtime]`
+- **Ephemeral.** `ParticipantIndex` is `none` (`~/cyclonedds.xml`), so the prefix is random per
+  process start — re-learn it from a fresh capture each run (roadmap Phase 1.3). The *entity id*
+  `0x1303` is assigned in creation order and is stable-ish but must not be assumed.
+
+### 2. Legitimate participant GUID prefixes ("foreign" discriminator for the SEU)
+
+From SPDP, the AWSIM process (pid 280356) runs **two** participants:
+
+| Prefix | Owner (from SPDP `property_list`) | Notes |
+|---|---|---|
+| `0110d7fa:22dce303:5427c7d5` | `AWSIM-Demo-Lightweight.x86_64`, pid 280356 | AWSIM |
+| `0110d7fa:ca3be3a4:1fc8049a` | `AWSIM-Demo-Lightweight.x86_64`, pid 280356 | **owns the speed writer `:1303`** |
+
+`[runtime]`. **SEU note:** both AWSIM participants share the leading 32-bit word `0110d7fa`
+(Cyclone derives the prefix stem per-process), while the throwaway subscriber used here got a
+distinct stem — one lever for a prefix-based allowlist, though the value is ephemeral. The
+**Autoware** participant prefix is still uncaptured because that stack was not launched; capture it
+the same way during Stage 2 bring-up (it is likewise ephemeral).
+
+### 3. Type discovery: **name-only, no type hash** — resolved
+
+The speed writer's SEDP publication carries exactly:
+`PID_TOPIC_NAME`(0x05)=`"rt/vehicle/status/velocity_status"`,
+`PID_TYPE_NAME`(0x07)=`"autoware_vehicle_msgs::msg::dds_::VelocityReport_"`,
+`PID_ENDPOINT_GUID`(0x5a), reliability/history/protocol/vendor PIDs, two Cyclone vendor PIDs
+(0x800c, 0x8003), then `PID_SENTINEL`. **No `PID_TYPE_INFORMATION` (0x1071), no type object, no
+type hash.** `[runtime]`
+
+→ Matching is by **type-name string**, not an XTypes type hash. **A forger (Module 1 discovery
+forgery; Carrier B) needs only the two strings above** — it does *not* have to reproduce a type
+hash. (TypeLookup service endpoints `DCPSTypeLookupRequest`/`Reply` do exist on the bus, but the
+publication itself matches without them.) This resolves the wiki §2.4/§10 `[UNVERIFIED]` item for
+this build/topic.
+
+### 4. On-wire QoS fingerprint of the speed writer — confirmed
+
+SEDP QOS blob: `durability=0` (**VOLATILE**), `reliability=1:…` (**RELIABLE**), `history=0:1`
+(**KEEP_LAST depth 1**), `ownership=0` (SHARED), `partition={}`, `data_representation=1(0)`
+(**XCDR1**). `[runtime]`
+
+- Confirms the recon **VOLATILE headline on the wire**, upgrading the publisher QoS from `[code]`/
+  `ros2 topic info` to a byte-level `[runtime]` reading. **Module 2 Carrier A** may publish with a
+  default VOLATILE writer; offering `transient_local` remains harmless-but-unnecessary.
+- `data_representation` = XCDR1 is the encapsulation **Carrier B** must emit (§4.3).
+
+### Still open after this capture
+
+- **Autoware-side reader QoS + participant prefix on the wire** — requires launching the Autoware
+  Core stack (`scripts/launch-autoware.sh`). The VOLATILE conclusion for readers stays `[code]`-
+  backed (source triangulation) + the publisher `[runtime]` cross-check until then. Fold this into
+  Stage 2 bring-up.
+- **DDS Security compiled in?** — not settled here (flips the participant-kill guard, not the
+  endpoint withdrawal); inspect the built lib. `[UNVERIFIED]`, wiki §7.1/§10.
+
+**Phase 1 exit criteria status:** topic/type/reader-QoS pinned (readers `[code]`, publisher
+`[runtime]`); live speed-writer GUID captured `[runtime]`; AWSIM participant prefixes recorded
+`[runtime]`; type-hash-vs-name resolved (**name-only**) `[runtime]`. Remaining: Autoware-side
+prefix + reader wire QoS (deferred to Stage 2). **Module 1 and Module 2 Carrier A are unblocked.**
+
 *(No PoC/attack code in this document — recon only.)*
 
 <!-- REPORT-COMPLETE -->
