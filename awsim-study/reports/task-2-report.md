@@ -1,4 +1,4 @@
-# Task 2 — Data Injection from a Third-Party Element Outside the Simulation
+# Task 2 — The Fault-Injection Harness: Feeding Off-Nominal Traces to Exercise the STL Monitor
 
 > **Read the [shared foundation](foundation.md) first.** This report reuses the foundation's layer
 > map (§2), publish path to the wire (§3), delivery-matching rules — topic-name mangling (§4.1),
@@ -13,35 +13,52 @@
 
 ## 1. Objective, scope, and exclusions
 
-**Objective.** Determine, from source, **every viable way a process outside the simulation can publish
-messages that legitimate Autoware Core nodes accept**, and compare those paths by realism and
-detectability. "Accept" is the load-bearing word: it is not enough to emit bytes on `lo`; the bytes
-must survive discovery, topic-name matching, type matching, and — the gate that silently defeats the
-naive attempt — QoS compatibility, so that a real Autoware subscriber's callback runs with the
-injected value.
+**Motivation.** The STL monitor cannot be trusted until it has been *exercised*: fed off-nominal
+timing/value traces on real topics and observed to raise the right property violation and reach the
+right safe-stop verdict. That requires a **fault-injection harness** — a test instrument that
+deliberately places early / late / stale / wrong-value samples onto the running command topics so the
+monitor's tap sees an off-nominal trace. This is exactly the abstract's "extreme fault-injection stress
+tests" apparatus `[LSEU-abstract]`. This task builds and characterizes that harness from source: it is
+the study's instrument, **not an attack the monitor must defend against**.
 
-**Worked target.** Throughout, the injected message is a real vehicle-controlling command:
+**Objective.** Determine, from source, **every viable way a process outside the simulation can publish
+a sample that a legitimate Autoware Core subscriber's callback actually runs on** — because only a
+trace that reaches a real subscriber reaches the monitor's tap point. "Accept" is the load-bearing
+word: it is not enough to emit bytes on `lo`; the bytes must survive discovery, topic-name matching,
+type matching, and — the gate that silently swallows a naive harness — QoS compatibility. An injected
+sample that never couples produces *no* trace to evaluate (and, read as a fault, is itself the
+strongest freshness failure — see §4.3).
+
+**Worked target.** Throughout, the injected message is a real actuation-feeding command:
 `/system/operation_mode/state` (`autoware_adapi_v1_msgs/msg/OperationModeState`) and
 `/control/command/gear_cmd` (`autoware_vehicle_msgs/msg/GearCommand`), both published with
 `transient_local` durability (setup-guide §8; foundation §4.3). Injecting well-formed values on these
-topics is the meaningful attack: an accepted `GearCommand{command: 2}` (DRIVE) or
-`OperationModeState{mode: 2}` (AUTONOMOUS) changes what the vehicle does (foundation §0 recon confirms
-the enum constants `DRIVE = 2` and `AUTONOMOUS = 2` are present in-checkout). Noise on an arbitrary
-topic is out of scope by the study's own framing (the-new-investigation-layer point 4).
+topics is what produces a *value-domain* off-nominal trace: a delivered `GearCommand{command: 2}`
+(DRIVE) or `OperationModeState{mode: 2}` (AUTONOMOUS) is a sample the monitor must timestamp, sequence,
+and check against the topic's value/freshness properties (foundation §0 recon confirms the enum
+constants `DRIVE = 2` and `AUTONOMOUS = 2` are present in-checkout). Injecting on an arbitrary topic
+produces no trace the monitor cares about and is out of scope by the study's framing
+(the-new-investigation-layer point 4).
 
-**Two paths, both traced against that target:**
-- **PATH A — an external rclcpp node** on the host, Cyclone-configured, publishing on the topic (§4).
-- **PATH B — hand-forged RTPS** DATA submessages on `lo`, with no ROS 2 / rclcpp at all (§5).
+**Two harness realizations, both traced against that target:**
+- **PATH A — an external rclcpp node** on the host, Cyclone-configured, publishing on the topic (§4):
+  the practical harness, modelling an off-nominal *ROS 2-native* source.
+- **PATH B — hand-forged RTPS** DATA submessages on `lo`, with no ROS 2 / rclcpp at all (§5): the
+  higher-fidelity harness, modelling an off-nominal source that is **not** a ROS 2 node (a faulty or
+  non-ROS ECU on the real bus) and that can set the sample's timestamp and sequence number by hand.
 
-**In scope.** The full acceptance chain for each path down to the wire, a minimal injector sketch for
-Path A, the enumeration of what Path B must reproduce, and **at least one trace of a *dropped*
-injection** (§4.3) — a volatile-only writer that never matches the `transient_local` reader.
+**In scope.** The full acceptance chain each realization must clear down to the wire, a minimal
+injector sketch for Path A, the enumeration of what Path B must reproduce, and **at least one trace of
+a *dropped* injection** (§4.3) — a volatile-only writer that never matches the `transient_local`
+reader, which is both a harness-misconfiguration hazard and, read as a fault, a silent freshness loss.
 
 **Excluded (and where it lives).** *Replay* and *over-publication* (re-sending captured traffic, or
-flooding N copies) are **Task 3**, which reuses this report's injector. *Silencing* a legitimate
-writer by forging an SEDP dispose, exploiting liveliness/deadline, or a link-layer kill is **Task 4**.
-*QoS as a prioritization or ownership-dominance lever* is **Task 5**. This report establishes only how
-an outsider gets a *single accepted publish* onto a command topic; the other tasks build on it.
+flooding N copies to violate an actuation-frequency constraint) are **Task 3** — the flagship "100x
+over-publication" stress case `[LSEU-abstract]` — which reuses this report's injector. *Silencing* a
+legitimate writer (forged SEDP dispose, liveliness/deadline expiry, link-layer kill) as a freshness
+loss is **Task 4**. *QoS as a timing-determinism / mixed-criticality lever* is **Task 5**. This report
+establishes only how the harness gets a *single accepted publish* — one off-nominal sample — onto a
+command topic; the other tasks build the timing-fault classes on top of it.
 
 ---
 
@@ -69,13 +86,14 @@ sketch the CDR body.
 ## 3. Mechanism overview — the acceptance chain both paths must clear
 
 **Orientation.** The naive model of injection is "send a UDP packet to the right port and the
-subscriber gets it." That is false here in two independent ways, and both paths must clear the same
-four gates before a subscriber's callback ever runs. The gates are the foundation's, assembled here
-into the attacker's checklist:
+subscriber gets it." That is false here in two independent ways, and both harness realizations must
+clear the same four gates before a subscriber's callback ever runs — i.e. before the injected sample
+becomes a *trace* the monitor can observe. The gates are the foundation's, assembled here into the
+harness's delivery checklist:
 
 ```mermaid
 flowchart TD
-  I["Outside process joins Cyclone domain 0 on lo"] --> D
+  I["Harness process joins Cyclone domain 0 on lo"] --> D
   D["GATE 0 — DISCOVERY (foundation §5)\nSPDP: announce a participant on lo:7400 multicast\nSEDP: announce a writer for the topic + its QoS"] --> N
   N["GATE 1 — TOPIC NAME (foundation §4.1)\nDDS name must be rt/control/command/gear_cmd, not /control/command/gear_cmd"] --> T
   T["GATE 2 — TYPE (foundation §4.2)\ntype name autoware_vehicle_msgs::msg::dds_::GearCommand_\n(+ type hash if DDS_HAS_TYPE_DISCOVERY)"] --> Q
@@ -86,30 +104,35 @@ flowchart TD
 (`src/cyclonedds/src/core/ddsi/src/q_qosmatch.c:158-267`) `[repo]`, **before any data sample is
 delivered** — so a mismatch is a *non-match*, not a late drop (foundation §4.3). Path A gets Gate 0
 and most of Gates 1–2 for free from the rclcpp/rmw stack and must only get Gate 3 right; Path B must
-construct all four by hand. That difference is the whole realism/detectability comparison.
+construct all four by hand. That difference is the whole **fidelity** comparison: how faithfully each
+realization reproduces a real off-nominal source, and how much control it has over the exact bytes,
+timestamp, and sequence number of the trace it delivers to the monitor.
 
 ---
 
-## 4. PATH A — external rclcpp node (DEEP)
+## 4. PATH A — external rclcpp node (the practical harness) (DEEP)
 
-**Motivation.** The cheapest injector is an ordinary ROS 2 Humble C++ program run on the host. Because
+**Motivation.** The simplest harness is an ordinary ROS 2 Humble C++ program run on the host. Because
 the Autoware container is `--net host` and both sides are pinned to Cyclone DDS on domain 0 bound to
 `lo` with multicast (setup-guide §0, §4, §6a), a third rclcpp process that sets the *same*
 `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and `CYCLONEDDS_URI` is, from DDS's point of view, just
 another legitimate participant. It is discovered automatically within one SPDP period (foundation §5,
 `spdp_interval` default 30 s at `q_ddsi_discovery.c`/`defconfig.c:36`) `[repo]`. **The one thing the
-attacker must get right is the QoS**, and getting it wrong is the dropped-injection trace of §4.3.
+harness must get right for the trace to be delivered at all is the QoS**, and getting it wrong is the
+dropped-injection trace of §4.3.
 
-**Mental model.** Path A reuses the *entire* legitimate publish path (foundation §3): the injector's
+**Mental model.** Path A reuses the *entire* legitimate publish path (foundation §3): the harness's
 `publisher->publish(msg)` descends `rclcpp → rcl → rmw → dds_write → write_sample_eot → nn_xpack_send`
 exactly as an Autoware node's would, producing a genuine RTPS DATA submessage with correct CDR, a
 correct type, the mangled topic name, and a real per-writer sequence number. Nothing is forged; the
-injector *is* a real DDS writer. Its only "attack" quality is that it is not part of the sim and it
-asserts a value the vehicle should not obey.
+injector *is* a real DDS writer. Its only off-nominal quality is that it is not part of the sim and it
+delivers a value the monitor's properties are meant to flag — which is precisely what makes it a clean
+value-domain fault source: everything about the sample is well-formed *except* the value the operator
+chose to inject.
 
 ### 4.1 The minimal injector, and the one QoS line that matters
 
-A faithful injector for `/system/operation_mode/state` is about a dozen lines. The security-relevant
+A faithful injector for `/system/operation_mode/state` is about a dozen lines. The trace-delivery
 content is entirely in the QoS:
 
 ```cpp
@@ -156,8 +179,10 @@ int main(int argc, char ** argv) {
 
 **No forgery anywhere.** The injector's writer GUID is a genuine, locally generated GUID (foundation
 §5); its sequence numbers start at 1 and increment (foundation §3 step 7, `++wr->seq`); its CDR is
-produced by the same serializer as Autoware's. This is why Path A is trivially *effective* and,
-paradoxically, why it is also trivially *detectable* — see §6.
+produced by the same serializer as Autoware's. This is why Path A is a trivially *effective* harness
+for value-domain faults — but also why it has *low fidelity for timing faults*: because the timestamp
+and sequence number are assigned by the real stack, the harness cannot hand-craft a stale or
+out-of-order sample the way Path B can (§5.2). It injects the value; the stack decides the timing.
 
 ### 4.2 Why acceptance follows once QoS is right
 
@@ -174,8 +199,13 @@ late-*reader* still receive the outsider's command (foundation §3 gotcha) `[rep
 
 ### 4.3 The dropped injection — a volatile writer against a `transient_local` reader (required trace)
 
-This is the trace the study demands: an injection that is *emitted* but never *accepted*. It is the
-default outcome of the sketch above with the `transient_local()` call removed.
+This is the trace the study demands, and it has two readings. As a **harness hazard**, it is an
+injection that is *emitted* but never *accepted* — the harness reports success while delivering no
+trace to the monitor's tap, so a test run that should exercise the monitor silently exercises nothing.
+As a **fault in its own right**, a writer that is present but never *couples* to the reader is the
+strongest freshness violation there is: the freshness clock never starts, staleness is unbounded, and
+(per foundation §4.3) nothing on the sender side signals the failure. Either way it is the default
+outcome of the sketch above with the `transient_local()` call removed.
 
 **Setup.** The injector calls `create_publisher("/system/operation_mode/state", rclcpp::QoS(1))` —
 depth 1, and the default profile's Reliable + **Volatile** durability (`qos.hpp:115-119`) `[repo]`. It
@@ -201,33 +231,41 @@ then calls `publish(m)`.
    `on_data` is never invoked for this writer.
 6. Crucially, `publish(m)` on the injector side still **succeeds** — `dds_write` returns `>= 0` and
    `rmw_publish` returns OK (foundation §3 step 4, `rmw_node.cpp:1834`) `[repo]`. The sample is written
-   into the injector's own WHC and, with no matched reader, goes nowhere. **The attacker sees success
-   and the vehicle sees nothing.**
+   into the injector's own WHC and, with no matched reader, goes nowhere. **The harness reports a
+   successful publish while no sample ever reaches the monitor's tap.**
 
 **Why this is the defining subtlety.** The failure is silent on the sender's side and produces *no
-delivered-then-rejected sample* — there is nothing for a naive content filter to catch, because the
-sample never crosses. The only network trace is the SEDP announcement of a writer whose durability
-does not satisfy the reader (foundation §5). An injector author who does not know the RxO rule will
-conclude "my publish worked, why doesn't the car move?" — the question the foundation's §4.3 exists to
-answer. `[INFERRED: from foundation §4.3 applied to the default-QoS writer; a live run or capture would
-confirm the reader never fires — [UNVERIFIED: would require running the sim].]`
+delivered-then-rejected sample* — there is nothing for a payload-inspecting monitor to catch, because
+the sample never crosses. The only wire evidence is the SEDP announcement of a writer whose durability
+does not satisfy the reader (foundation §5). This is the crucial lesson for the monitor's *design*: a
+coupling that never forms cannot be caught by looking at delivered content; it can only be caught by a
+**freshness/liveness tap** that notices the reader's expected sample never arrives. The dropped
+injection is therefore the study's negative control — the case that proves the monitor must watch
+*absence*, not just *values*. `[INFERRED: from foundation §4.3 applied to the default-QoS writer; a
+live run or capture would confirm the reader never fires — [UNVERIFIED: would require running the
+sim].]`
 
 ---
 
-## 5. PATH B — direct RTPS on the wire, no rclcpp (DEEP)
+## 5. PATH B — direct RTPS on the wire, no rclcpp (the high-fidelity harness) (DEEP)
 
-**Motivation.** Path A matters for the *simulation*; Path B matters for the **deployment threat model
-the SEU actually defends**. On a real vehicular network the hostile element is a compromised ECU that
-may not run ROS 2 at all — it speaks whatever the bus speaks. The faithful analogue here is a process
-that forges **RTPS** (the DDS wire protocol; foundation glossary) directly onto `lo`, reproducing by
-hand everything the rclcpp/rmw/Cyclone stack did for Path A. Enumerating *what it must reproduce* is
-the deliverable; it is also, precisely, the list of invariants the SEU can check.
+**Motivation.** Path A models an off-nominal *ROS 2-native* source; Path B models the harder and
+more realistic one: an off-nominal source that is **not a ROS 2 node at all**. On the deployment target
+— a resource-constrained multicore RISC-V bus running mixed-criticality workloads `[LSEU-abstract]` —
+a fault can originate at a non-ROS ECU that simply speaks whatever the bus speaks. The faithful analogue
+here is a process that emits **RTPS** (the DDS wire protocol; foundation glossary) directly onto `lo`,
+reproducing by hand everything the rclcpp/rmw/Cyclone stack did for Path A. It is worth building because
+it is the *only* realization that lets the harness set the sample's **timestamp and sequence number by
+hand** (§5.2) — i.e. the only way to synthesize genuine *timing* faults (stale, early, reordered
+samples) rather than only value faults. Enumerating *what it must reproduce* is the deliverable; it is
+also, precisely, the list of wire observables the monitor taps to timestamp and sequence each sample.
 
 **Mental model.** Cyclone does not accept "a DATA packet." It accepts a DATA submessage **from a writer
 GUID it has already discovered and matched** for the reader's topic, type, and QoS. So Path B is really
-two forgeries: a **discovery forgery** (make Cyclone believe a matching writer exists) and a **data
-forgery** (a well-formed DATA submessage carrying valid CDR under that writer's GUID and a fresh
-sequence number). Skip the first and the second is dropped as coming from an unknown writer.
+two constructions: a **discovery construction** (make Cyclone believe a matching writer exists) and a
+**data construction** (a well-formed DATA submessage carrying valid CDR under that writer's GUID and a
+chosen sequence number). Skip the first and the second is dropped as coming from an unknown writer —
+and, again, no trace reaches the monitor.
 
 ### 5.1 What Path B must reproduce — the enumeration
 
@@ -241,13 +279,16 @@ sequence number). Skip the first and the second is dropped as coming from an unk
 | 6 | **CDR framing of the payload** | A DATA submessage whose `serializedPayload` is a 4-byte encapsulation header (`CDR_LE`, options `0x0000`) followed by the message body in XCDR1 (§5.2) | `[spec]` header + `[repo]` XCDR1 |
 | 7 | **A valid writer GUID + fresh sequence number** | The DATA must cite the *same* writer GUID announced in step 3 and a sequence number the reader has not seen; sequence numbers are per-writer monotonic (foundation §3 step 7) | `[repo]` (seq model) / `[spec]` (DATA header) |
 
-Items 1–3 and 7's GUID are the **discovery forgery**; items 4–6 and 7's sequence number are the **data
-forgery**. Only the port numbers, entity ids, the QoS rule, the XCDR1 flag, and the sequence-number
-model are `[repo]` findings; the byte-level layout of SPDP/SEDP plists and the DATA submessage header
-is the **RTPS wire contract `[spec]`** — this checkout contains the Cyclone *behaviour* that consumes
-those bytes, not a normative statement of their layout.
+Items 1–3 and 7's GUID are the **discovery construction**; items 4–6 and 7's sequence number are the
+**data construction**. Only the port numbers, entity ids, the QoS rule, the XCDR1 flag, and the
+sequence-number model are `[repo]` findings; the byte-level layout of SPDP/SEDP plists and the DATA
+submessage header is the **RTPS wire contract `[spec]`** — this checkout contains the Cyclone
+*behaviour* that consumes those bytes, not a normative statement of their layout. The reason the harness
+wants this level of control is item 7: by choosing the sequence number and the CDR `stamp` field
+directly, it can present the reader with an out-of-order or back-dated sample — the raw material of a
+timing fault — which Path A's honest stack would never produce.
 
-### 5.2 The CDR the forger must produce for `GearCommand`
+### 5.2 The CDR the harness must produce for `GearCommand`
 
 The one place Path A got serialization for free (foundation §3 step 6, `ddsi_serdata_from_sample`),
 Path B must hand-build. Cyclone serializes ROS messages as **XCDR1**: the sertype advertises
@@ -271,65 +312,87 @@ serializedPayload (inside the RTPS DATA submessage):
 The 4-byte encapsulation header is the RTPS `[spec]` contract; the field order, types, and alignment
 are dictated by the `.msg` and the XCDR1 rule `[repo]`. `OperationModeState` is the same shape with a
 different body. Getting one byte of alignment or the endianness flag wrong makes Cyclone misparse the
-sample — a fragility the SEU can exploit, and a reason Path B is *harder*, not merely lower-level, than
-Path A.
+sample — the reason Path B is *harder*, not merely lower-level, than Path A, and the reason the harness
+must reproduce the exact XCDR1 the real stack emits before it can be trusted to deliver a clean,
+monitor-visible trace. Note the same `stamp` field the CDR carries (`+4 .. +11`) is the freshness clock
+the monitor later reads (foundation §0): the harness's control over those bytes is exactly its control
+over the sample's apparent age.
 
 ### 5.3 Feasibility verdict
 
-Path B is **feasible in principle but substantially harder than Path A**, and the difficulty is
-concentrated in the discovery forgery (items 1–3), not the data forgery. Reproducing a byte-accurate
-SPDP/SEDP handshake that Cyclone's discovery accepts — correct builtin entity ids, a well-formed QoS
-plist, and (possibly) a matching type hash — is where an off-the-shelf forger fails. `[UNVERIFIED:
-whether a hand-built SPDP/SEDP + DATA sequence is accepted by this specific Cyclone build, and whether
-a type hash is required, would be settled only by a packet capture against the running container.]`
-The value of enumerating it is not that it is easy; it is that **each item is an invariant the real
-sim never violates**, so each is a detection surface (§6).
+Path B is **feasible in principle but substantially harder to build than Path A**, and the difficulty
+is concentrated in the discovery construction (items 1–3), not the data construction. Reproducing a
+byte-accurate SPDP/SEDP handshake that Cyclone's discovery accepts — correct builtin entity ids, a
+well-formed QoS plist, and (possibly) a matching type hash — is where a hand-rolled harness first
+fails. `[UNVERIFIED: whether a hand-built SPDP/SEDP + DATA sequence is accepted by this specific Cyclone
+build, and whether a type hash is required, would be settled only by a packet capture against the
+running container.]` The value of enumerating it is not that it is easy; it is that **each item is a
+wire observable the real stack always produces**, so each is a field the monitor's RTPS-layer tap can
+read to reconstruct the timing/value trace it evaluates (§6).
 
 ---
 
-## 6. SEU implications
+## 6. What Task 2 hands the STL monitor
 
-**The two paths have opposite detectability profiles, and the loopback co-location distorts both — so
-the SEU must reason about the deployment bus, not the sim.**
+The harness is not itself a property-bearing mechanism — it is the instrument that *produces the traces*
+the other tasks' properties are evaluated against. Its closing block therefore reads slightly
+differently from a mechanism section: it states which properties this instrument can exercise, what the
+monitor observes when it fires, and how a harness run validates the safe-stop path.
 
-- **Path A is maximally effective and maximally detectable.** The injector is a *real* participant, so
-  it announces itself: a **new participant GUID prefix that belongs to neither sim participant** (AWSIM
-  or the Autoware container) appears in SPDP on `lo:7400`, and a **new writer on a command topic**
-  appears in SEDP (foundation §5). The SEU's cleanest signal is the *identity* one: on the deployment
-  network the set of legitimate participants and their GUIDs is knowable, and a command writer for
-  `rt/control/command/gear_cmd` or `rt/system/operation_mode/state` whose GUID is not on the allowlist
-  is, by itself, the attack. A **late-joining participant on domain 0** (foundation §5, one SPDP period
-  after start) is a secondary temporal signal. Notably, the injector had to **offer `transient_local`**
-  to succeed (§4.2), so even its QoS is fixed and predictable — the SEU knows exactly what a working
-  command injector's SEDP record looks like.
+1. **The property.** The harness's purpose is to drive each of the monitor's derived properties
+   off-nominal on demand — the "extreme fault-injection stress tests" of the abstract `[LSEU-abstract]`.
+   Concretely, for the two command topics it can synthesize a violating trace for:
+     - a **value-domain** property (Path A or B) — e.g. an out-of-envelope command
+       `G( gear_cmd.command ∈ valid_enum ∧ mode_transition_is_legal )` — by simply choosing the injected
+       value (§4.1, §5.2);
+     - a **freshness** property (Path B, which controls the `stamp` bytes) —
+       `G( age(/control/command/gear_cmd) ≤ Δ_fresh )` — by back-dating the sample's source timestamp
+       (§5.2), a trace Path A cannot forge because the stack timestamps honestly (§4.1);
+     - a **rate / ordering** property (Path B, which controls the sequence number) —
+       `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )` and monotonic sequence — by emitting early,
+       late, or out-of-order DATA (§5.1 item 7);
+     - the **coupling / liveness** property as a negative control (§4.3) —
+       `G( pub(topic) → F_[0,Δ_deadline] delivered(topic) )` — by the QoS-mismatch case where the sample
+       is emitted but never delivered, so the freshness clock never starts.
+   All four bounds are `[INFERRED]` from the mechanism and the topics' actuation role; the harness does
+   not measure them, it makes them *fail on demand* so the monitor can be checked.
 
-- **The dropped-injection case (§4.3) is a distinct, quieter signature.** A writer that announces
-  VOLATILE durability on a `transient_local` command topic never matches and delivers nothing — but its
-  *SEDP announcement still appears*. The SEU can flag "a foreign writer on a command topic whose QoS
-  does not satisfy the reader" as a **failed or reconnaissance injection**, visible even though no
-  sample crossed. That is a detection opportunity a content-inspection-only monitor would miss entirely,
-  because there is no delivered payload to inspect.
+2. **The trace event.** What the monitor observes when the harness fires is one delivered sample at the
+   reader tap, carrying its **source timestamp, per-writer sequence number, and CDR value**. Path A
+   produces these through the honest stack (foundation §3), so the value is arbitrary but the timestamp
+   and sequence number are truthful — good for value faults, useless for timing faults. Path B lets the
+   harness set all three by hand at the **RTPS DATA layer** (§5.1–§5.2), so it can present a sample whose
+   apparent age or arrival order is off-nominal. The §4.3 dropped case produces **no** trace event at the
+   reader tap at all — its only wire evidence is the SEDP announcement — which is exactly why the monitor
+   must have a freshness/liveness tap that fires on *expected-but-absent* samples, not only on delivered
+   ones.
 
-- **Path B is the deployment-realistic threat and the harder detection problem.** A forger that
-  reproduces a legitimate-looking GUID, topic, type, and QoS (§5.1) is trying to look like the sim, so
-  identity alone may not separate it. Here the SEU's surface is the **set of invariants Path B must
-  reproduce but a real endpoint never has to think about**: a GUID prefix reused or malformed relative
-  to the participant's advertised locators, SEDP QoS that is *exactly* `transient_local` but attached to
-  a writer that never sent history, DATA sequence numbers that do not advance monotonically from a
-  discovered writer, or CDR whose encapsulation/alignment deviates from the XCDR1 the real stack emits
-  (§5.2). Each is a positive check the SEU can run at the RTPS layer.
+3. **The safe-stop decision.** The harness never triggers a safe-stop; a harness run is *successful*
+   precisely when an injected off-nominal trace drives the monitor to the **correct** verdict. Because
+   both target topics feed actuation (`transient_local` command topics; foundation §0), a delivered
+   value or freshness violation on `/control/command/gear_cmd` or `/system/operation_mode/state` is a
+   **critical** violation whose expected verdict is a preemptive safe-stop — so a passing harness run is
+   one where injecting `command: 2` (DRIVE) out of an illegal mode, or a back-dated sample past
+   `Δ_fresh`, causes the monitor to safe-stop. The §4.3 dropped injection is the key *negative*
+   validation: it must be caught by the freshness/liveness path (unbounded staleness), **not** by content
+   inspection — a harness run that injects it and sees the monitor stay silent has found a real gap in
+   the monitor, not a limitation of the harness.
 
-- **The realism caveat frames all of the above.** On this sim, *both* paths are trivial because the
-  container is `--net host` and everything shares one Cyclone domain on `lo` with multicast — there is
-  no network boundary to cross (foundation §5 realism caveat; the-new-investigation-layer point 3). That
-  ease is a **co-location artifact**, not a property of the deployment network. On a real automotive
-  Ethernet/CAN bus, the attacker (a compromised ECU) still has to reach the discovery multicast group
-  and match the topic/type/QoS — the *mechanics* of both paths transfer intact, but the *trivial ease*
-  does not. The SEU should therefore treat the **identity and QoS invariants** (foreign GUID, the
-  mandatory `transient_local` offer, monotonic per-writer sequence numbers) as its portable detection
-  surface, because those are dictated by Cyclone's matching and delivery rules (foundation §4–§5) and
-  hold on the deployment bus regardless of how the attacker reached it. Path A's ease is what the sim
-  demonstrates; Path B is what the SEU is ultimately built to catch.
+**Fidelity, and the co-location caveat.** On this sim *both* realizations are easy to stand up because
+the container is `--net host` and everything shares one Cyclone domain on `lo` with multicast — there is
+no network boundary to cross (foundation §5 realism caveat; the-new-investigation-layer point 3). That
+ease is a **co-location artifact** of the test bench, not a property of the deployment bus. On the target
+RISC-V bus a non-ROS fault source must still reach the discovery multicast group and match the
+topic/type/QoS for its trace to be delivered — the *mechanics* of both realizations transfer intact
+(foundation §4–§5), which is what makes this harness a faithful stand-in for real off-nominal sources.
+Path A is the convenient value-fault instrument; Path B is the one that reproduces the timing faults the
+monitor most needs to be exercised against.
+
+> **Adversarial footnote (demoted, out of scope).** Each realization here could equally be driven by a
+> hostile element rather than a test operator — a rogue rclcpp node (Path A) or a compromised/forging
+> ECU (Path B). That security reading is not this study's concern: the SEU is a *safety* monitor for
+> off-nominal timing/value traces whatever their origin, and the harness exists to exercise it, not to
+> model an attacker.
 
 ---
 
@@ -352,6 +415,8 @@ Reused by reference (opened in the foundation, not re-opened here): `q_qosmatch.
 | `[UNVERIFIED]` | Whether a hand-built SPDP/SEDP + DATA sequence is accepted by this Cyclone build (Path B feasibility, §5.3) | A packet capture / bench against the running container |
 | `[UNVERIFIED]` | That the §4.3 dropped writer's `publish()` succeeds locally while the reader never fires | Running the sim with a VOLATILE injector and observing no callback |
 | `[INFERRED]` | The default-QoS injector offers VOLATILE (from `qos.hpp:115-119` default profile + `create_readwrite_qos` always setting a durability) | Confirmed by reading both; a capture of the SEDP QoS would corroborate |
+| `[INFERRED]` | The STL bounds the harness drives off-nominal (value-domain, `Δ_fresh`, rate/ordering, coupling) and their safe-stop verdicts (§6) | Derived from mechanism + the topics' actuation role; the sim cannot be run to exhibit them |
+| `[LSEU-abstract]` | The SEU's purpose, the fault-injection-harness framing, and the "extreme fault-injection stress tests" motivation | The abstract only — **not measured by this study**; the sim cannot be run here (setup-guide §0) |
 
 **Per-section confidence:**
 
@@ -360,7 +425,8 @@ Reused by reference (opened in the foundation, not re-opened here): `q_qosmatch.
 | §3 Acceptance chain | HIGH | Every gate is a foundation `[repo]` finding assembled, not a new inference. |
 | §4 Path A (rclcpp injector) | HIGH | QoS API, the `transient_local()` setter, the default-VOLATILE default, and the RxO consequence are all in-checkout `[repo]`; the publish path is the foundation's HIGH-confidence chain. |
 | §4.3 Dropped injection | HIGH | The non-match is read directly from `q_qosmatch.c:167` + the durability enum ordering; only the *observed* "publish succeeds, callback never fires" runtime symptom is `[UNVERIFIED]`. |
-| §5 Path B (forged RTPS) | MEDIUM | The *requirements* (ports, entity ids, QoS rule, XCDR1 flag, sequence model) are `[repo]`; the *byte layout* of SPDP/SEDP/DATA is `[spec]`, and end-to-end acceptance is `[UNVERIFIED]`. |
-| §6 SEU implications | HIGH | Drawn from the mechanism (identity/QoS/sequence invariants) and the foundation realism caveat, not generic security commentary. |
+| §5 Path B (high-fidelity harness) | MEDIUM | The *requirements* (ports, entity ids, QoS rule, XCDR1 flag, sequence model) are `[repo]`; the *byte layout* of SPDP/SEDP/DATA is `[spec]`, and end-to-end acceptance is `[UNVERIFIED]`. |
+| §6 Monitor closing block | MEDIUM | The observables (source timestamp, sequence number, CDR value, the absent-sample case) are `[repo]` mechanism; the STL bounds and safe-stop verdicts they exercise are `[INFERRED]`, and the harness/stress-test purpose is `[LSEU-abstract]`, never measured here. |
 
-<!-- REPORT-COMPLETE -->
+
+<!-- SAFETY-REVISION-COMPLETE -->

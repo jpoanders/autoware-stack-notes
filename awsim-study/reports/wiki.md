@@ -1,25 +1,35 @@
-# AWSIM / Autoware / Cyclone DDS Fault-Injection Study
+# AWSIM / Autoware / Cyclone DDS Temporal-Constraint & STL-Monitor Study
 
-A controlled, academic study of how the communication stack of an autonomous-driving simulation can
-be configured, shut down, injected into, replayed against, prioritized, and silently disabled — and
-what each of those mechanisms means for a device designed to defend the vehicle network.
+A controlled, academic study of how the communication stack of an autonomous-driving simulation
+carries the temporal and freshness constraints that a runtime monitor must verify — where each
+constraint comes from in the real stack, and how the wire behaviour can satisfy, degrade, or violate
+it — read through configuration, shutdown, external injection, replay/over-publication, QoS timing,
+and silent freshness loss.
 
 Abstract. This study examines the AWSIM Digital-Twin demo, an autonomous-driving simulation built
 on the Robot Operating System 2 (ROS 2) and the Autoware self-driving software stack, communicating
 over Eclipse Cyclone DDS (an implementation of the Data Distribution Service messaging standard). The
-analysis is conducted from the open-source code of that stack rather than from a running system. 
-Working layer by layer, from the application's C++ publish call down to the raw packets on the wire, 
-it catalogues how a coreelement can be reconfigured, shut down, injected into, replayed against, prioritized, or made to
-disappear. The end goal it serves is a Security Enforcement Unit (SEU): a device that will sit on
-a real vehicle network and detect or block exactly these faults. Every section therefore closes with
-the SEU consequence of what it found, the observable signature to detect, or the lever to enforce,
-and those are gathered in one place near the end.
+analysis is conducted from the open-source code of that stack rather than from a running system.
+Working layer by layer, from the application's C++ publish call down to the raw packets on the wire,
+it locates where each data dependency's *temporal constraint* — set by actuation frequency and data
+freshness — is established, met, or lost on the Cyclone DDS wire. The end goal it serves is the
+Safety Enforcement Unit (SEU): a lightweight, event-driven runtime-verification monitor that derives
+these constraints automatically from the pub/sub data dependencies, formalizes each as a Signal
+Temporal Logic (STL) property, evaluates system traces against it, and executes a preemptive
+safe-stop when a critical temporal or freshness constraint is violated `[LSEU-abstract]`. Every
+section therefore closes by translating its mechanism into monitor terms — the property it implies,
+the trace event that lets an event-driven monitor evaluate that property, and whether a violation is
+critical enough to trigger a safe-stop — and those are gathered in one place near the end. Where
+later sections build injectors, replay, or endpoint-withdrawal mechanisms, they are the study's
+**fault-injection harness**: ways to drive off-nominal (early / late / stale / wrong-value /
+over-published) traces into the system so the monitor is exercised and its safe-stop path validated,
+matching the abstract's "extreme fault-injection stress tests" `[LSEU-abstract]`.
 
 ---
 
 ## Table of contents
 
-1. [Scope, threat model, and how to read this](#1-scope-threat-model-and-how-to-read-this)
+1. [Scope, safety/temporal-constraint model, and how to read this](#1-scope-safetytemporal-constraint-model-and-how-to-read-this)
 2. [Background: the communication stack](#2-background-the-communication-stack)
    - [2.1 A primer for newcomers](#21-a-primer-for-newcomers)
    - [2.2 Layer map](#22-layer-map)
@@ -31,7 +41,7 @@ and those are gathered in one place near the end.
 5. [Replay and over-publication](#5-replay-and-over-publication)
 6. [QoS message prioritization](#6-qos-message-prioritization)
 7. [Disabling an element without a clean shutdown](#7-disabling-an-element-without-a-clean-shutdown)
-8. [Security Enforcement Unit implications, gathered](#8-security-enforcement-unit-implications-gathered)
+8. [Safety Enforcement Unit implications, gathered](#8-safety-enforcement-unit-implications-gathered)
 9. [Glossary](#9-glossary)
 10. [Open questions and unverified items](#10-open-questions-and-unverified-items)
 
@@ -46,6 +56,10 @@ can tell a verified fact from a reasoned expectation:
   direct reading.
 - `[UNVERIFIED]` — could only be settled by running the simulation or capturing live packets, which
   this study could not do.
+- `[LSEU-abstract]` — a claim, number, or definition drawn from the (unpublished) Safety Enforcement
+  Unit abstract this study feeds — its motivation and target behaviour, *not* something this static
+  source study measured. Its Hardware-in-the-Loop results (`<2%` CPU, negligible interference, linear
+  verification cost, 100× over-publication) are context only; the simulation is not run here.
 
 A note on file citations. File paths such as `dds_write.c:566` refer to the source of the named
 open-source component at the versions studied. All of these projects are public; the paths let a
@@ -54,13 +68,34 @@ every path citation were removed.
 
 ---
 
-## 1. Scope, threat model, and how to read this
+## 1. Scope, safety/temporal-constraint model, and how to read this
 
-What the study asks. For this specific stack, and from its source code: how can each element be
-configured or controlled; how can one element be shut down; how can a process from outside publish
-messages that legitimate nodes accept; can captured traffic be replayed; can message priority be
-manipulated; and how can an element be disabled short of a clean shutdown? Each answer is then
-translated into a detection signature or an enforcement lever for the Security Enforcement Unit.
+The data-centric north star. An autonomous vehicle is a data-flow machine: components exchange
+samples, and a downstream actuator behaves safely only if the data it depends on arrives *often
+enough* and is *fresh enough*. Those two quantities — **actuation frequency** and **data freshness** —
+turn each data dependency into a **temporal constraint** `[LSEU-abstract]`. The Safety Enforcement
+Unit derives such constraints automatically from the pub/sub data dependencies, formalizes each as a
+**Signal Temporal Logic (STL)** property, evaluates system traces against it, and executes a
+preemptive **safe-stop** when a critical property is violated `[LSEU-abstract]`. This study supplies
+the missing physical half of that pipeline: the Cyclone DDS mechanism that decides whether a given
+property *can* hold on the wire.
+
+```
+data-centric pub/sub abstraction
+  → temporal constraint derived from a data dependency   (actuation frequency + data freshness)
+    → STL property for runtime verification
+      → event-driven capture & evaluation of the system trace
+        → preemptive safe-stop on a critical violation
+```
+
+What the study asks. For this specific stack, and from its source code: where is each element's
+timing behaviour configured; how does a source going silent manifest, and how fast is it observable;
+how can off-nominal traces be driven *into* the system to exercise the monitor; how do replay and
+over-publication distort a rate/freshness constraint; how does QoS shape latency and jitter (and can
+the constraints be met on the wire at all); and how is data freshness lost *without* a clean shutdown
+signal — the hardest case for a monitor? Each answer closes by translating the mechanism into the
+STL property it implies, the trace event that lets an event-driven monitor evaluate it, and the
+safe-stop decision it forces.
 
 The system under study. The pieces and how they are wired together are fixed and concrete:
 
@@ -91,12 +126,13 @@ referred to throughout, so they are stated once here:
 | DDS domain |  **0** (Cyclone configured with `Domain Id="any"`) | Only same-domain processes discover each other |
 | Participant index | `ParticipantIndex=none` | Unicast ports are ephemeral, not fixed |
 | Multicast | Enabled on `lo`; load-bearing for discovery | Turning it off breaks the whole system |
-| Max message size | `MaxMessageSize=65500B` | The fragmentation limit relevant to malformed-packet attacks |
-| Write-history-cache limit | `WhcHigh=500kB` | The back-pressure watermark that throttles flooding |
+| Max message size | `MaxMessageSize=65500B` | The fragmentation limit bounding a malformed/over-large sample |
+| Write-history-cache limit | `WhcHigh=500kB` | The back-pressure watermark that throttles over-publication |
 
 The worked targets. Two real, vehicle-controlling command topics ground every section, chosen
 because both are published with `transient_local` durability (a delivery mode explained in
-[§2.4](#24-delivery-matching-rules)) and the vehicle actually obeys them:
+[§2.4](#24-delivery-matching-rules)) and the vehicle actually obeys them — so a temporal or freshness
+violation on either is a candidate safe-stop trigger:
 
 | Topic | Message type | Key value that commands the vehicle |
 |---|---|---|
@@ -106,22 +142,30 @@ because both are published with `transient_local` durability (a delivery mode ex
 The enum constant `DRIVE = 2` is defined at `autoware_vehicle_msgs/msg/GearCommand.msg:3` `[code]`, and
 `AUTONOMOUS = 2` at `autoware_adapi_v1_msgs/operation_mode/msg/OperationModeState.msg:4` `[code]`.
 
-The attacker model. The attacker is a process outside the simulation that joins Cyclone domain
-0 on `lo`. Two carriers for that attacker recur throughout: an ordinary ROS 2 (`rclcpp`) process
-configured for Cyclone, and a hand-forged RTPS speaker that runs no ROS 2 at all and emits raw wire
-packets.
+The time base. A third topic, `/clock`, becomes newly load-bearing under the safety framing:
+age and inter-arrival are measured against **sim time**, which the bridge publishes on `/clock` at a
+steady **~90–100 Hz** (setup-guide §6d). Every freshness bound `Δ_fresh` and rate bound in this study
+is expressed against that clock, not against wall time.
 
-The realism caveat — it binds every section, and is stated once here. Because the container uses
+The fault-injection model. The study's test instrument is a process outside the simulation that
+joins Cyclone domain 0 on `lo` and drives off-nominal traces into the system so the monitor's
+safe-stop path can be exercised. Two carriers recur throughout: an ordinary ROS 2 (`rclcpp`) process
+configured for Cyclone, and a hand-forged RTPS speaker that runs no ROS 2 at all and emits raw wire
+packets. These are the abstract's "extreme fault-injection stress tests" `[LSEU-abstract]`; where the
+same trace could *also* be induced maliciously, that is a one-line aside, not the point.
+
+The topology caveat — it binds every section, and is stated once here. Because the container uses
 host networking and AWSIM is native, both sides sit on Cyclone domain 0 bound to `lo`, so any
 process on the host that joins domain 0 is discovered and matched with no network isolation to
-cross. That makes injection and disabling trivial in this simulation — but that ease is a
-simulation artifact. The Security Enforcement Unit is designed for a real vehicle network — a
-compromised Electronic Control Unit (ECU) on automotive Ethernet or a Controller Area Network (CAN)
-bus — where a hostile element must still reach the discovery group and match a topic's name, type, and
-Quality-of-Service settings. Throughout, "easy because it is all on loopback in one domain" is kept
-distinct from "the attacker's real capability on the deployment network the simulation stands in for,"
-wherever a realism or detectability judgment depends on it. Later sections refer back to this caveat
-rather than restating it.
+cross. That makes fault injection *cheap to set up* in this simulation — but that ease is a
+simulation artifact, convenient for a test harness. What matters for the monitor is not the ease of
+injection but what the injected trace does to a temporal/freshness property and how observable the
+violation is. The deployment target is a real AV network — components on automotive Ethernet or a
+Controller Area Network (CAN) bus — whose data dependencies impose the same class of temporal
+constraints; the SEU runs there as a lightweight event-driven monitor `[LSEU-abstract]`. Throughout,
+"easy because it is all on loopback in one domain" is kept distinct from "what the wire mechanism does
+to a constraint the monitor must verify," wherever a realism judgment depends on it. Later sections
+refer back to this caveat rather than restating it.
 
 ---
 
@@ -194,7 +238,8 @@ forward the still-native message struct downward; no serialization happens until
    (`dds_write.c:45,55,589,599`) `[code]`.
 6. Serialization to CDR. `dds_write_impl_plain` calls `ddsi_serdata_from_sample` — the first and
    only point the message becomes CDR (Common Data Representation) bytes (`dds_write.c:566`)
-   `[code]`. A forged-RTPS attacker must reproduce this CDR by hand.
+   `[code]`. The hand-forged-RTPS branch of the fault-injection harness ([§4.3](#43-carrier-b-hand-forged-rtps-without-ros-2))
+   must reproduce this CDR by hand to emit a well-formed off-nominal sample.
 7. Sequence number + WHC. Descending through `write_sample_eot`, the writer's sequence number
    is advanced as `seq = ++wr->seq;` and the sample is stored via `insert_sample_in_whc`
    (`q_transmit.c:1286,1299`) `[code]`. Sequence numbers are per-writer and monotonic — the fact
@@ -255,9 +300,13 @@ two never connect and no data flows. The comparisons, read from the code:
 The durability enum ordering is what makes this rule bite: in Cyclone `VOLATILE = 0 <
 TRANSIENT_LOCAL = 1` (`dds_public_qosdefs.h:77-80`) `[code]`. So a `transient_local` reader (kind 1)
 and a volatile writer (kind 0) trip `rd(1) > wr(0)` → `true`, the function returns `false`, and the
-endpoints never connect (`q_qosmatch.c:167-169`) `[code]`. This is the gate an injector's writer
-must satisfy by offering `transient_local` durability or stronger, and the dropped-injection trace
-in the [injection section](#4-injecting-data-from-outside-the-simulation) follows exactly this failure.
+endpoints never connect (`q_qosmatch.c:167-169`) `[code]`. This gate matters to the monitor for a
+reason beyond matching: **a mismatch means the freshness clock never starts** — the consumer is
+coupled to no producer, so `age(topic)` is unbounded (infinite staleness) while a naive reader sees
+only "no samples yet," indistinguishable from startup. Any harness writer that is meant to reach the
+reader must therefore offer `transient_local` durability or stronger; the dropped-injection trace in
+[§4](#4-injecting-data-from-outside-the-simulation) follows exactly this failure, and is the study's
+worked example of a silent, uncoupled producer.
 
 How the ROS layers map onto these values. The middleware QoS profile carries exactly nine members
 — history, depth, reliability, durability, deadline, lifespan, liveliness, liveliness lease duration,
@@ -283,9 +332,11 @@ endpoint subscriptions `0x4c2` (`q_rtps.h:41,43,45`) `[code]`.
 - SPDP is a periodic multicast announcement, default interval 30 seconds
   (`spdp_interval = 30000000000` ns, `defconfig.c:36`) `[code]`, so a late-joining participant is
   discovered within one SPDP period.
-- SEDP carries exactly the QoS that the matching function later compares — so the durability an
-  injector offers is visible on the wire before a single data sample is sent. This is the Security
-  Enforcement Unit's earliest detection surface.
+- SEDP carries exactly the QoS that the matching function later compares — so the durability a new
+  producer offers, and therefore whether it will *couple* to a given consumer at all, is visible on
+  the wire before a single data sample is sent. For the monitor this is the earliest trace event that
+  bounds a liveness property: a SEDP publication is when a new source becomes eligible to satisfy
+  `pub(topic)`.
 
 Domain 0 and the ports. The effective domain is 0. For domain 0
 (`defconfig.c:37-42`; `ddsi_portmapping.c`) `[code]`:
@@ -307,21 +358,35 @@ a free participant index for domain 0." In this deployment, disabling multicast 
 every container node — the basis of the one-command link kill in the
 [disabling section](#7-disabling-an-element-without-a-clean-shutdown).
 
-GUID as a signature. Any process that joins domain 0 carries a locally generated GUID prefix not
-belonging to the two legitimate simulation participants (AWSIM and the Autoware container) — the
-basis of the "foreign participant GUID" detection signal used throughout.
+GUID as a trace key. Every sample and every discovery record is keyed by the writer's GUID (a
+locally generated 12-byte prefix plus entity id). The monitor uses that key to attribute a trace to a
+*source* — `pub(topic)` and `age(topic)` are always evaluated per (topic, writer GUID) — which is why
+a returning or newly-injected source, carrying a fresh prefix, starts a fresh liveness clock rather
+than continuing the old one. (Where a fault is induced maliciously, an unexpected prefix is also an
+identity signal; that is a footnote, not the property.)
 
 ---
 
 ## 3. Configurable elements and shutting an element down
 
+*(Reframed as: liveness / freshness loss — a source going silent.)*
+
+Motivation. A source going silent is the strongest freshness violation and the archetypal critical
+fault a safe-stop must catch: once a command topic stops publishing, `age(topic)` grows without bound
+and the actuator is acting on stale data. This section maps *where* an element's timing behaviour is
+set (so a monitor knows what a nominal trace should look like) and the distinct *ways* a source can
+stop producing — each of which leaves a different trace signature and takes a different time to become
+observable.
+
 Question answered. Which elements of the stack can be configured or controlled to change their
-behaviour, lifetime, or presence — and how can a single element be shut down cleanly? The direct
+behaviour, lifetime, or presence — and how can a single element be shut down? The direct
 answer: configuration splits into settings fixed at launch, settings announced but not changeable, and
 settings served live over the network; and there are four distinct shutdown mechanisms, of which
 only one is reachable from the network, and even that one only if the node is a managed
 "lifecycle" node — which, read from source, none of the command-topic owners here are (§3.2), so
-no command node has a network-reachable clean shutdown at all.
+no command node has a network-reachable clean shutdown at all. For the monitor, each mechanism is a
+different *freshness-loss signature*: which trace events (if any) precede the silence, and how many
+publish periods elapse before the absence is unambiguous.
 
 ### 3.1 Configurable elements
 
@@ -370,7 +435,9 @@ from the network.
   [§2.4](#24-delivery-matching-rules)). A `deactivate` request stops a lifecycle publisher from
   publishing; `shutdown` terminates the managed lifecycle; the transition self-announces a
   `TransitionEvent` (`lifecycle_node_interface_impl.hpp:406-431,446`) `[code]`. But this lever does
-  not apply to the command-topic owners in this deployment. Read from the node sources, the nodes that
+  not apply to the command-topic owners in this deployment — which matters because it is the one
+shutdown that self-announces (a `TransitionEvent` trace event) *before* the topic goes quiet, and it
+is absent on the command path. Read from the node sources, the nodes that
   own the two anchor command topics are all plain `rclcpp::Node`s, not
   `rclcpp_lifecycle::LifecycleNode`s: `VehicleCmdGate`, which produces `/control/command/gear_cmd` and
   reads `/system/operation_mode/state`, derives from `rclcpp::Node`
@@ -387,17 +454,17 @@ from the network.
   which have no lifecycle state machine and expose no `~/change_state` service. What *is* verified is the
   mechanism: where a managed node exists, `change_state` is a network-reachable clean-shutdown lever with
   no durability barrier — but no command-topic owner here is such a node, so that lever is
-  unavailable against them. Reversible? `deactivate` yes (via `activate`); `shutdown` no. SEU
-  implication: the clean, network-reachable `change_state` disable does not exist for these nodes in
-  either direction — the SEU cannot use it to quarantine a compromised command node, and an attacker
-  cannot use it to silence a legitimate one; both are driven to the in-process shutdowns (not
-  network-reachable) or the forged protocol withdrawal of
-  [§7.1](#71-protocol-level--making-the-middleware-believe-the-element-is-gone).
+  unavailable against them. Reversible? `deactivate` yes (via `activate`); `shutdown` no. Monitor
+  note: because the announced, pre-silence `change_state`/`TransitionEvent` path does not exist for
+  these nodes, a freshness monitor gets no early warning from this mechanism — the command topics can
+  only lose freshness through the in-process shutdowns or the protocol withdrawal of
+  [§7.1](#71-protocol-level--making-the-middleware-believe-the-element-is-gone), none of which
+  announce themselves ahead of the silence.
 - Process signals / hard kill. The ROS signal handler funnels a termination signal into the
   whole-context shutdown for every context configured to shut down on signal
   (`signal_handler.cpp:254-284`) `[code]`; a hard kill skips all of it. Reachable from domain 0? No
-  — signals need host/operating-system access, not a DDS endpoint. Host networking makes killing the
-  process trivial, but that ease is a co-location artifact, not a network capability. Signature: a
+  — signals need host/operating-system access, not a DDS endpoint, so this freshness loss produces no
+  DDS-observable transition the monitor could key on. Freshness-loss signature: a
   graceful signal produces a clean withdrawal like the context shutdown; a hard kill produces no clean
   withdrawal, and peers only reap the participant when its discovery lease expires.
 
@@ -408,28 +475,63 @@ from the network.
 | Lifecycle `change_state` | one managed node | **No for the command nodes — none are managed (§3.2)** | Yes | `deactivate` yes / `shutdown` no | `TransitionEvent` + foreign-GUID service client |
 | Signal / hard kill | whole process | No (host only) | graceful yes / hard no | No | graceful clean / hard silence + lease timeout |
 
+Closing block — §3 in monitor terms.
+
+1. The property. A liveness/freshness pair per actuation-feeding topic:
+   `G( age(/control/command/gear_cmd) ≤ Δ_fresh )` and
+   `G( pub(/control/command/gear_cmd) → F_[0,Δ_deadline] pub(/control/command/gear_cmd) )`, and the
+   same over `/system/operation_mode/state`. Every shutdown mechanism in §3 violates the liveness
+   property; `Δ_deadline` and `Δ_fresh` are derived from the topic's nominal publish period against
+   the `/clock` base, not from any DDS setting, because the command readers configure no deadline at
+   all ([§5.3](#53-over-publication-and-cyclones-flow-control)) `[INFERRED]`.
+2. The trace event. Primarily **sample arrival** — the per-(topic, writer GUID) arrival timestamp,
+   from which age and inter-arrival both follow, visible at every layer from ddsi upward. The only
+   *pre-silence* event is the `TransitionEvent` of a managed node — which the command owners are not
+   (§3.2) — so on the command path the monitor has no early warning and must key on arrival gaps. A
+   **first-class hazard** here: a `transient_local` writer's last sample is latched in the WHC and
+   re-served to a late-joining reader, so a naive reader that keys on "did a sample ever arrive" will
+   see a **dead publisher as alive** — the freshness monitor must therefore evaluate age against the
+   sample's own timestamp, never against mere presence of a latched value.
+3. The safe-stop decision. **Safe-stop.** These topics feed actuation and none of the mechanisms
+   self-heals within an actuation period (the in-process shutdowns need a restart, the protocol
+   withdrawal needs re-discovery). The only differentiator is *latency of detection*: one sample
+   transit if a `TransitionEvent` precedes (managed nodes only), roughly one publish period if the
+   monitor watches arrivals, and up to the 10-second participant lease if it instead trusts DDS
+   liveness — which is why arrival timestamps, not DDS liveliness, must carry the property.
+
 ---
 
 ## 4. Injecting data from outside the simulation
 
-Question answered. What are the viable ways for a process outside the simulation to publish a
-message that a legitimate node *accepts* — meaning its callback actually runs with the attacker's value
-— and how do those ways compare on realism and detectability? The direct answer: two carriers. An
-ordinary ROS 2 node is trivial and works as long as it offers `transient_local` durability; a
-hand-forged RTPS speaker is feasible in principle but much harder, with the difficulty concentrated in
-faking discovery. "Accept" is load-bearing: the bytes must clear discovery, topic-name matching,
-type matching, and QoS compatibility.
+*(Reframed as: the fault-injection harness — how off-nominal traces are driven in to exercise the monitor.)*
 
-The acceptance chain both carriers must clear, assembled as the attacker's checklist:
+Motivation. To exercise a runtime STL monitor you must be able to inject off-nominal traces —
+early, late, stale, or wrong-value samples — into a live topic and see whether the monitor's property
+fires and its safe-stop path runs. This section is the study's **test instrument**: the two ways an
+out-of-simulation process can get a sample *accepted* by a legitimate reader (its callback runs with
+the injected value), which is exactly what is needed to author a controlled fault trace against a real
+`transient_local` command topic. It matches the abstract's "extreme fault-injection stress tests"
+`[LSEU-abstract]`.
+
+Question answered. What are the viable ways for the harness to publish a sample that a legitimate
+node *accepts* — meaning its callback actually runs with the injected value — and how do the carriers
+compare on how faithfully they reproduce a real source's trace? The direct answer: two carriers. An
+ordinary ROS 2 node is trivial and works as long as it offers `transient_local` durability; a
+hand-forged RTPS speaker reproduces a source's wire trace faithfully but is much harder, with the
+difficulty concentrated in faking discovery. "Accept" is load-bearing: the bytes must clear discovery,
+topic-name matching, type matching, and QoS compatibility — and only an accepted sample changes the
+trace the monitor evaluates.
+
+The acceptance chain both carriers must clear, assembled as the harness checklist:
 
 ### 4.1 Carrier A — an external ROS 2 node
 
-The cheapest injector is an ordinary ROS 2 (Humble) C++ program on the host, configured with the same
-`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and the same Cyclone configuration file. From DDS's point of
-view it is just another legitimate participant, discovered within one SPDP period. It reuses the entire
+The cheapest harness carrier is an ordinary ROS 2 (Humble) C++ program on the host, configured with
+the same `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` and the same Cyclone configuration file. From DDS's
+point of view it is just another participant, discovered within one SPDP period. It reuses the entire
 publish path ([§2.3](#23-the-publish-path-to-the-wire)) — nothing is forged; the injector *is* a real
-DDS writer with a genuine GUID, sequence numbers starting from 1, and correct CDR. The one thing the
-attacker must get right is the QoS:
+DDS writer with a genuine GUID, sequence numbers starting from 1, and correct CDR. The one thing it
+must get right is the QoS:
 
 ```cpp
 // Run with: RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
@@ -459,15 +561,19 @@ This is the default outcome of the sketch above with `transient_local()` removed
 discovery, the matching function evaluates `rd.durability(1) > wr.durability(0)` → true, records the
 reason as the durability policy, and returns `false` (`q_qosmatch.c:167-169`) `[code]`. The
 endpoints never connect; the reader's callback never fires. Crucially, `publish()` on the injector
-still succeeds — the sample goes into its own write history cache and nowhere else. The attacker
-sees success and the vehicle sees nothing. The only network trace is the SEDP announcement of a writer
-whose durability does not satisfy the reader — a signature a content-only monitor would miss entirely,
-because no sample ever crosses.
+still succeeds — the sample goes into its own write history cache and nowhere else. The harness
+reports success and the vehicle trace is unchanged. This is the study's worked example of an
+**uncoupled producer**: the only wire trace is a SEDP announcement of a writer whose durability does
+not satisfy the reader, so no sample ever crosses and the consumer's `age(topic)` clock never starts
+(the [§2.4](#24-delivery-matching-rules) point). A monitor that keys only on delivered content sees
+nothing here; the freshness property is what catches it, because the coupled source stays silent.
 
 ### 4.3 Carrier B: hand-forged RTPS without ROS 2
 
-Carrier A matters for the *simulation*; Carrier B matters for the deployment threat model — a
-compromised ECU that may not run ROS 2 at all. It is two forgeries: a discovery forgery (make
+Carrier A suffices to author a value/timing fault in the *simulation*; Carrier B is the carrier that
+reproduces a source's full *wire* trace faithfully — a fresh writer GUID, its own sequence numbers and
+HEARTBEAT — which is what the replay analysis ([§5](#5-replay-and-over-publication)) needs, and models
+a producer (e.g. an ECU) that runs no ROS 2 at all. It is two forgeries: a discovery forgery (make
 Cyclone believe a matching writer exists) and a data forgery (a well-formed DATA packet carrying
 valid CDR under that writer's GUID and a fresh sequence number). What it must reproduce:
 
@@ -499,18 +605,47 @@ Verdict. Carrier B is feasible in principle but substantially harder than Carrie
 difficulty is concentrated in the discovery forgery (items 1–3), not the data forgery; reproducing a
 byte-accurate SPDP/SEDP handshake that Cyclone accepts is where an off-the-shelf forger fails. Whether
 a hand-built sequence is accepted by this specific build, and whether a type hash is required, are
-`[UNVERIFIED]` (would need a live capture). The value of the enumeration is that each item is an
-invariant the real simulation never violates — so each is a detection surface.
+`[UNVERIFIED]` (would need a live capture). The value of the enumeration is twofold: each item is an
+invariant a *faithful* trace must satisfy, and each is a knob the harness can deliberately perturb to
+author a specific off-nominal trace.
+
+Closing block — §4 in monitor terms.
+
+1. The property. §4 does not itself impose a constraint; it is the instrument that *violates* one on
+   demand. By choosing the injected sample's timestamp and rate it drives whichever property is under
+   test — freshness `G( age(/system/operation_mode/state) ≤ Δ_fresh )`, a wrong-value trace on
+   `mode`/`command`, or (via a burst) the rate bound `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )`.
+   The one hard precondition is coupling: an injector that does not offer `transient_local` is
+   uncoupled (§4.2) and changes no trace at all.
+2. The trace event. Every accepted injection is an ordinary **sample arrival** on the target topic —
+   an (arrival timestamp, source timestamp, writer GUID, sequence number) tuple, visible from ddsi
+   upward. Carrier A restarts sequence numbers from 1 under a fresh GUID; Carrier B can reproduce an
+   arbitrary GUID/sequence/HEARTBEAT trace. The dropped injection (§4.2) produces only a SEDP
+   record and no sample event — the monitor sees it as *continued silence*, not as an arrival.
+3. The safe-stop decision. This section sets up the decision rather than making it: the harness's
+   job is to confirm that when it drives an out-of-bound age, rate, or value onto an actuation topic,
+   the monitor's property fires and the safe-stop path runs. Whether a given injected trace *should*
+   trigger safe-stop is decided by the property under test (§3, §5, §7), keyed on the topic's role in
+   actuation.
 
 ---
 
 ## 5. Replay and over-publication
 
-Question answered. Can an outside injector replay traffic — capture legitimate messages on a
-command topic and re-publish them so a subscriber accepts them *as fresh* — and if not, can it at least
-over-publish (emit many messages without capturing any)? The direct answer, preserving the shape of
-the investigation: replay is examined first. A *faithful* replay that re-sends the original packets
-verbatim is blocked by the reader's duplicate/ordering filter. That forces a pivot to
+Motivation — the flagship fault class. This is the study's flagship for the monitor, because it is
+the abstract's headline stress case: **100× network over-publication** — a *rate / actuation-frequency*
+constraint driven far off-nominal — under which the verifier's cost must stay **linear**
+`[LSEU-abstract]`. The question is how the wire behaves when a topic is flooded (or a stale value is
+re-presented), and therefore what an event-driven monitor observes and must evaluate cheaply as the
+trace rate explodes. Two distinct violations live here: a *freshness* violation (an old value
+re-presented as current) and a *rate* violation (samples arriving faster than `1/f_max`).
+
+Question answered. Can the harness replay traffic — capture legitimate messages on a command topic
+and re-present them so a subscriber treats them *as fresh* — and if not, can it at least over-publish
+(emit many samples without capturing any)? The direct answer, preserving the shape of the
+investigation: replay is examined first. A *faithful* replay that re-sends the original packets
+verbatim is blocked by the reader's duplicate/ordering filter — a wire-level fact with direct
+consequences for what the monitor can and cannot delegate to DDS. That forces a pivot to
 over-publication, which works but self-throttles under Cyclone's flow control.
 
 What "accept as fresh" requires. A replayed sample must clear two reader-side stages that a
@@ -538,11 +673,12 @@ data writer, with its own GUID and its own counter starting from 1. So:
 6. The callback fires with the injected value (`[INFERRED]` from steps 1–5; the firing itself is
    `[UNVERIFIED]`).
 
-This satisfies the study's definition of replay (re-publishing previously-seen traffic) but is not
-faithful: the original writer's GUID and sequence numbers are gone, replaced by the injector's. A
-monitor that models "who said this" sees a new participant. ROS 2 gives the attacker no control over the
-writer GUID or sequence number, so a faithful replay is only conceivable on the direct-RTPS path — which
-is where it dies.
+This satisfies the study's definition of replay (re-presenting previously-seen content) but is not
+faithful: the original writer's GUID and sequence numbers are gone, replaced by the injector's. To the
+monitor the trace is simply a *fresh sample under a new source GUID carrying an old value* — the
+per-(topic, writer GUID) freshness clock restarts, so the stale value arrives looking current. ROS 2
+gives no control over the writer GUID or sequence number, so a wire-faithful replay is only conceivable
+on the direct-RTPS path — which is where it dies.
 
 ### 5.2 Faithful direct-RTPS replay — blocked
 
@@ -569,10 +705,14 @@ HEARTBEAT from it (`q_receive.c:2363-2368`) `[code]`, so a faithful-replay forge
 reproduce a consistent HEARTBEAT whose announced range lines up with what it replays.
 
 Verdict and forced pivot. Faithful direct-RTPS replay is blocked by the reorder buffer's
-`(writer GUID, next_seq)` state. To succeed, the attacker must abandon faithfulness in one of two ways —
-forge a fresh writer GUID (a new proxy writer, `next_seq = 1`, exactly what the ROS 2 path does for
-free) or advance the sequence numbers past the reader's window with a matching HEARTBEAT/GAP. Either
-way the delivered samples are new samples carrying old content, which is over-publication.
+`(writer GUID, next_seq)` state. To deliver at all, the harness must abandon wire-faithfulness in one
+of two ways — use a fresh writer GUID (a new proxy writer, `next_seq = 1`, exactly what the ROS 2 path
+does for free) or advance the sequence numbers past the reader's window with a matching HEARTBEAT/GAP.
+Either way the delivered samples are *new samples carrying old content*, which is over-publication.
+This is decisive for the monitor: DDS's own reorder/dedup logic rejects an *identical* (GUID,
+sequence) re-presentation, but it does **not** protect against a stale *value* re-presented under a new
+sequence number — so freshness-by-value cannot be delegated to the wire; the monitor must evaluate age
+against the sample's own timestamp.
 
 ### 5.3 Over-publication and Cyclone's flow control
 
@@ -583,11 +723,11 @@ each unacknowledged sample stays in the write history cache (WHC) until the read
 2. Before the next sequence number, `write_sample_eot` tests whether unacknowledged bytes exceed the
    high-water mark (`q_transmit.c:1252`) `[code]` — that mark is the `WhcHigh=500kB` from the
    configuration.
-3. Over the mark, it calls `throttle_writer`, which forces out a HEARTBEAT and blocks the attacker's
-   own `publish()` until the cache drains or a timeout (`q_transmit.c:1257-1105`) `[code]`.
+3. Over the mark, it calls `throttle_writer`, which forces out a HEARTBEAT and blocks the
+   over-publishing writer's own `publish()` until the cache drains or a timeout (`q_transmit.c:1257-1105`) `[code]`.
 4. The timeout is the reliability max-blocking-time; on expiry the publish aborts with a timeout code
    (`q_transmit.c:1053,1266-1271`) `[code]`. So a reliable flood self-throttles; past the watermark
-   the attacker's own publishes stall and can fail.
+   the over-publishing writer's own publishes stall and can fail.
 5. Even for delivered samples, keep-last-1 means the reader cache keeps only the newest per instance
    (`dds_rhc_default.c:613`) `[code]` — a burst of N identical commands collapses to "the latest one."
 6. Lifespan and deadline are left at their defaults (unset) on the command readers, so
@@ -621,11 +761,13 @@ each unacknowledged sample stays in the write history cache (WHC) until the read
    reader and writer (a repo-wide search finds no ownership, deadline, or lifespan setter used anywhere
    in AWSIM's C#) `[code]`.
 
-Asymmetry. The watermark is a cost the attacker pays, not a limit on the victim. Flooding
-over-writes the command value at high rate but cannot, by volume alone, make a legitimate writer lose —
-Cyclone offers no prioritization or ownership arbitration on these SHARED, ROS-created readers (see the
-[prioritization section](#6-qos-message-prioritization)). Over-publication is a rate/timing attack, not
-a dominance one. The DDS layer imposes no content de-duplication — and, read now from the node sources,
+Where the flood's cost lands. The watermark is paid by the *over-publishing writer*, not the
+reader. Flooding over-writes the command value at high rate but cannot, by volume alone, displace a
+legitimate writer — Cyclone offers no prioritization or ownership arbitration on these SHARED,
+ROS-created readers (see the [prioritization section](#6-qos-message-prioritization)). Over-publication
+is therefore a *rate/freshness* fault, not a takeover: it corrupts the timing of the command stream,
+which is exactly what a rate-bound STL property is written to catch. The DDS layer imposes no content
+de-duplication — and, read now from the node sources,
 neither does the Autoware application. The two anchor-topic consumers act on each received value
 without comparing it to the last: `VehicleCmdGate`'s operation-mode callback stores the sample verbatim,
 `[this](const OperationModeState::SharedPtr msg) { current_operation_mode_ = *msg; }`, with no
@@ -644,21 +786,60 @@ sample, `_gearInput = ...Ros2ToUnityGear(msg)`, and its control callback overwri
 steering the same way, with no freshness or duplicate check
 (`src/awsim/Assets/Awsim/Scripts/Entity/Vehicle/AccelVehicle/Input/AccelVehicleRos2Input.cs:77-88`)
 `[code]`; `UpdateInputs()` then actuates whatever the latest sample left behind (`:97-106`) `[code]`. So
-a replayed gear or control command is actuated as fresh on the AWSIM side too. SEU
-implication: replay and duplicate-command detection cannot be delegated to the application; the SEU
-must itself treat a re-presented command value as potentially hostile, since the vehicle path will obey
-it.
+a replayed gear or control command is actuated as fresh on the AWSIM side too.
+
+Closing block — §5 in monitor terms.
+
+1. The property. A rate bound and a freshness bound on each command topic:
+   `G( inter_arrival(/control/command/gear_cmd) ∈ [1/f_max, 1/f_min] )` and
+   `G( age(/control/command/gear_cmd) ≤ Δ_fresh )`. Over-publication (up to the abstract's 100× case
+   `[LSEU-abstract]`) violates the upper rate bound; a re-presented stale value violates freshness even
+   while the rate looks nominal. Bounds are `[INFERRED]` from the topic's nominal period against
+   `/clock`, since the readers set no deadline/lifespan (confirmed below).
+2. The trace event. A per-(topic, writer GUID) stream of **(arrival timestamp, source timestamp,
+   sequence number)** tuples — inter-arrival gives the rate, source-timestamp-vs-now gives the age.
+   These are cheap, per-event scalars: evaluating the rate/freshness property is O(1) per sample, so
+   total cost is linear in the trace length even under a 100× flood — the mechanism behind the
+   abstract's claimed linear verification complexity `[LSEU-abstract]`. Cyclone's own reorder logic
+   supplies a bonus observable (an already-seen (GUID, sequence) pair is dropped as too-old,
+   `q_radmin.c:1979`), but that only catches *bit-identical* replays, not stale values under new
+   sequence numbers.
+3. The safe-stop decision. Depends on which bound broke. A **freshness** violation on an actuation
+   topic is safe-stop (the vehicle would act on stale data — and, as the node sources confirm, neither
+   DDS nor the Autoware application de-duplicates or freshness-gates: `VehicleCmdGate`'s and
+   `MrmHandler`'s callbacks act on each value with no stamp/counter/equality guard
+   (`vehicle_cmd_gate.cpp:110-112`; `mrm_handler_core.cpp:163-165`) `[code]`, and AWSIM's
+   `AccelVehicleRos2Input` actuates whatever the latest sample left behind
+   (`AccelVehicleRos2Input.cs:77-88,97-106`) `[code]`). A pure **rate** excess with fresh, consistent
+   values is a degradation to flag unless it also breaches freshness or starves a real-time task — but
+   because rate-and-freshness rejection cannot be delegated to the application (it obeys every
+   re-presented value), the monitor must own both properties itself.
 
 ---
 
 ## 6. QoS message prioritization
 
-Question answered. How can Cyclone DDS Quality-of-Service settings be used to prioritize messages,
-and how much of that is reachable through ROS 2 versus only through Cyclone's own configuration? The
-direct answer, stated plainly: the two policies that would actually prioritize — transport priority
-and ownership — are not exposed by the ROS middleware at all, so prioritization is unreachable from
-the ROS QoS API. Cyclone implements both internally, but only its C API (and, partly, its XML) can
-reach them, and the one XML path that would shape the wire is compiled out of standard builds.
+*(Reframed as: timing determinism & mixed-criticality — whether the temporal constraints can be met on the wire at all.)*
+
+Motivation. A temporal constraint can only be *satisfied* if the wire delivers samples with
+bounded, predictable latency and jitter; and the monitor itself has to run on a resource-constrained
+multicore RISC-V executing mixed-criticality workloads, consuming `<2%` of core capacity with
+negligible interference on real-time tasks `[LSEU-abstract]`. Both concerns turn on the same question
+this section answers: what timing/scheduling levers does Cyclone QoS actually expose — deadline,
+latency budget, transport priority, ownership, history/WHC — and which of them are reachable at all
+in this build? If the levers that would shape latency and prioritize critical flows are unreachable,
+then the wire offers no determinism guarantee and the monitor must treat every command topic's timing
+as best-effort — which is precisely what the freshness/rate properties are for.
+
+Question answered. How can Cyclone DDS Quality-of-Service settings be used to prioritize or
+timing-shape messages, and how much of that is reachable through ROS 2 versus only through Cyclone's
+own configuration? The direct answer, stated plainly: the two policies that would actually
+prioritize — transport priority and ownership — are not exposed by the ROS middleware at all, so
+prioritization is unreachable from the ROS QoS API. Cyclone implements both internally, but only its C
+API (and, partly, its XML) can reach them, and the one XML path that would shape the wire is compiled
+out of standard builds. For the monitor, the consequence is that on the stock stack there is **no
+wire-level timing determinism knob** in reach — latency and jitter are whatever best-effort delivery
+yields.
 
 Central finding. Neither transport priority nor ownership is present in the ROS middleware QoS
 profile or set anywhere in the Cyclone binding, so prioritization is not reachable through the ROS 2
@@ -677,9 +858,10 @@ and has no transport-priority or ownership setter — it could not, since its on
 middleware profile it returns. A search of the whole Cyclone binding finds no call to
 `dds_qset_ownership`, `dds_qset_ownership_strength`, or `dds_qset_transport_priority` `[code]`. Because
 the middleware layer is the vendor-neutral contract, a policy absent there is invisible to every ROS 2
-DDS vendor — the ceiling is set at the middleware, not the vendor. Consequence: every legitimate
-writer and reader, and any ROS injector or enforcement node, carries transport priority 0 and SHARED
-ownership.
+DDS vendor — the ceiling is set at the middleware, not the vendor. Consequence: every writer and
+reader on the ROS path — including any harness node — carries transport priority 0 and SHARED
+ownership, so no ROS-created flow can be given latency precedence over another. Timing determinism, if
+needed, cannot come from the ROS QoS layer.
 
 ### 6.2 Transport priority — where it lives, and where it is dead
 
@@ -702,8 +884,8 @@ announced before data flows. It is consumed in exactly two places:
   threshold does not discriminate. Using it would require raising the threshold in the configuration
   and giving the privileged writer a matching transport priority via the C API. Even fully
   configured it shapes *latency* (which thread delivers), not *arbitration*, and lives on the receive
-  side keyed on the remote writer's advertised priority — so an attacker setting a high priority gains
-  no precedence over other writers.
+  side keyed on the remote writer's advertised priority — so it cannot give a critical command flow
+  guaranteed precedence, and a stray high-priority sample gains none either.
 
 ### 6.3 Ownership — implemented, but ROS readers never arm it
 
@@ -724,18 +906,19 @@ Cyclone C-API or direct-DDS path that could set it out of band; every one is an 
 subscription, so all stay SHARED. The AWSIM client reaches the same conclusion by the same route: its
 `QosSettings` wrapper has no ownership setter and its command readers request only reliability,
 durability, and history (§6.1), so AWSIM's readers stay SHARED too — the newest-wins, no-arbitration
-behaviour holds across both client surfaces. An injector that reached the C API
-to set exclusive ownership with high strength would gain nothing, and worse would fail to match the
-SHARED reader (an RxO ownership-kind mismatch, `q_qosmatch.c:191`) `[code]` and deliver nothing — a
-variant of the dropped-injection trace, on ownership kind rather than durability. Making ownership usable
-would require changing the Autoware reader's QoS to exclusive and setting the enforcer's strength via the
-C API — a coordinated, out-of-band change to both endpoints.
+behaviour holds across both client surfaces. A writer that reached the C API to set exclusive
+ownership with high strength would gain nothing, and worse would fail to match the SHARED reader (an
+RxO ownership-kind mismatch, `q_qosmatch.c:191`) `[code]` and deliver nothing — a variant of the
+uncoupled-producer trace, on ownership kind rather than durability. Making ownership usable — e.g. to
+let a designated safe-stop actuator's command dominate — would require changing the Autoware reader's
+QoS to exclusive and setting the privileged writer's strength via the C API, a coordinated, build-time
+change to both endpoints, not a runtime action.
 
 ### 6.4 True prioritization vs. latency shaping
 
 The ROS-reachable policies influence timing but do not set priority between writers: deadline is a
-contract and alarm, not a scheduler (the [disabling section](#7-disabling-an-element-without-a-clean-shutdown)
-uses its *violation* as a silencing signal); latency budget is a hint whose only teeth are the §6.2
+contract and alarm, not a scheduler (the [freshness-loss section](#7-disabling-an-element-without-a-clean-shutdown)
+reads its *violation* as a freshness trace event); latency budget is a hint whose only teeth are the §6.2
 synchronous-delivery gate, ANDed with a transport priority ROS cannot set; reliability, history, and
 depth govern whether and how many samples survive — flow control (see the
 [replay section](#5-replay-and-over-publication)), not who wins.
@@ -749,27 +932,54 @@ depth govern whether and how many samples survive — flow control (see the
 | **Reliability / history / depth** | Yes | Yes | Flow control, not priority |
 | **Durability (transient_local)** | Yes | Yes | The match gate, not priority |
 
+Closing block — §6 in monitor terms.
+
+1. The property. A latency/jitter constraint underlies every freshness and rate property:
+   `G( transit_latency(topic) ≤ Δ_lat )` and bounded jitter, so that `age` and `inter_arrival` stay
+   within their bounds. §6's finding is that the stack provides **no wire knob** to *guarantee* this
+   `Δ_lat` — transport priority and ownership are unreachable on the ROS path, network-channels/DSCP is
+   compiled out — so `Δ_lat` is whatever best-effort delivery yields and the constraint is monitored,
+   not enforced, at the QoS layer `[INFERRED]`.
+2. The trace event. The same per-sample **(arrival timestamp, source timestamp)** the freshness
+   property uses; their difference is transit latency and its variation is jitter. No extra observable
+   is needed — and none is available, since the prioritization levers that would tag or reorder flows
+   are inert here (transport priority 0, SHARED ownership on every endpoint).
+3. The safe-stop decision. QoS misconfiguration is not itself a safe-stop; it is a *precondition*
+   that decides whether the freshness/rate properties can be met at all, so a persistent latency-bound
+   breach is escalated through the freshness property (§3/§5), not flagged on its own. The deployment
+   angle is the mixed-criticality one: the monitor runs on a resource-constrained multicore RISC-V and
+   must add `<2%` CPU with negligible interference on real-time tasks `[LSEU-abstract]` — which the §5
+   linear, O(1)-per-event evaluation makes feasible; this static study does not measure it.
+
 ---
 
 ## 7. Disabling an element without a clean shutdown
 
-Question answered. Short of the clean shutdown covered in the
-[shutdown section](#3-configurable-elements-and-shutting-an-element-down), how can a core element be
-disabled or silenced — at the protocol layer, the physical/transport (loopback) layer, and the
-application layer? The direct answer: at the protocol layer, a forged endpoint-withdrawal packet
-makes the middleware delete a live endpoint with no authorization check; at the physical layer, one
-command on `lo` takes the whole system down; at the application layer, the clean levers already
-described apply. This section draws its application layer from the
-[shutdown section](#3-configurable-elements-and-shutting-an-element-down), its discovery/forging
-mechanics from the [injection section](#4-injecting-data-from-outside-the-simulation) and the
-[background](#2-background-the-communication-stack), and its QoS reasoning from the
-[prioritization section](#6-qos-message-prioritization). Its one genuinely new mechanism is the forged
-endpoint withdrawal.
+Motivation — the hardest case, and the actuator. §3 covered freshness lost through a *clean*
+shutdown, which at least sometimes announces itself. This section covers freshness lost **without** a
+clean shutdown signal — the hardest case for a monitor, because the source stops feeding a reader with
+no announced transition to key on. The same three layers are also read a second way: as candidate
+mechanisms by which a **safe-stop could itself halt a data flow** — the actuation side of the SEU.
+Protocol, physical, and application each cut the flow differently, and each leaves (or fails to leave)
+a different trace.
+
+Question answered. Short of the clean shutdown covered in
+[§3](#3-configurable-elements-and-shutting-an-element-down), how can a source stop reaching its
+consumer — at the protocol layer, the physical/transport (loopback) layer, and the application layer?
+The direct answer: at the protocol layer, a forged endpoint-withdrawal packet makes the middleware
+delete a live endpoint with no authorization check (silent freshness loss, no announced transition);
+at the physical layer, one command on `lo` takes the whole system down; at the application layer, the
+clean levers already described apply. This section draws its application layer from
+[§3](#3-configurable-elements-and-shutting-an-element-down), its discovery/forging
+mechanics from [§4](#4-injecting-data-from-outside-the-simulation) and the
+[background](#2-background-the-communication-stack), and its QoS reasoning from
+[§6](#6-qos-message-prioritization). Its one genuinely new mechanism is the endpoint withdrawal.
 
 
-The protocol layer needs the attacker to forge a small keyed packet but no control of the link; the
-physical layer needs control of `lo` but forges nothing; the application layer needs a request the node
-obeys.
+The protocol layer needs a small keyed packet but no control of the link; the physical layer needs
+control of `lo` but forges nothing; the application layer needs a request the node obeys. Read as
+*fault* they are ways freshness silently disappears; read as *actuation* they are the levers a
+safe-stop could pull.
 
 ### 7.1 Protocol level — making the middleware believe the element is gone
 
@@ -789,45 +999,52 @@ On receipt, deletion is keyed on the payload GUID, with no ownership check. Foll
 withdrawal for the `gear_cmd` writer GUID: the discovery handler dispatches on the status-info bits to
 the dead-endpoint path (`q_ddsi_discovery.c:1851,1867-1880`); a structural check confirms only that the
 entity id is a *writer* id — not an authorization check (`q_ddsi_discovery.c:1745,1480-1493`); it
-then deletes the proxy writer using the GUID taken from the attacker's payload
+then deletes the proxy writer using the GUID taken from the injected payload
 (`q_ddsi_discovery.c:1747-1748`); the writer is looked up purely by GUID and removed, and the receive
 path is told to stop feeding readers from it (`ddsi_proxy_endpoint.c:419,430,444`) — all `[code]`. No
 source-versus-target check exists on this dead path, unlike the alive path, which derives and checks
-the owning participant (`q_ddsi_discovery.c:1502-1506`) `[code]`. Net effect: the publishing node still
-calls `publish()` successfully, but its `gear_cmd` no longer reaches the AWSIM reader — silenced without
-being shut down.
+the owning participant (`q_ddsi_discovery.c:1502-1506`) `[code]`. Net effect for the monitor: the
+publishing node still calls `publish()` successfully, but its `gear_cmd` no longer reaches the AWSIM
+reader — **freshness is lost with no announced transition and no clean withdrawal**, the hardest silent
+case. (Read the other way, this same keyed packet is a candidate *actuator* for a safe-stop that needs
+to halt one specific flow.)
 
 The participant-level kill and the guard that does not guard here. A participant-level withdrawal
 writes a dispose on the participant-discovery builtin writer (`q_ddsi_discovery.c:569-576`); on receipt
 the handler deletes the proxy participant and all its endpoints — but only if a
 deletion-allowed guard passes (`q_ddsi_discovery.c:645-660`) `[code]`. On this non-secure stack the
-guard does not stop the attack: without DDS Security compiled in it is a stub that returns `true`
+guard does not gate the deletion: without DDS Security compiled in it is a stub that returns `true`
 unconditionally (`ddsi_security_omg.h:1183-1186`); with security compiled in but an unauthenticated
 participant (this stack configures no security), it still allows deletion of the unauthenticated
 participant, its own code comment flagging the missing GUID-prefix check (`ddsi_security_omg.c:2052-2068`)
 `[code]`. Which build compiles is `[UNVERIFIED]`, but the outcome is the same for an unauthenticated
 participant. This has a strictly larger blast radius than the endpoint withdrawal.
 
-What the forger must first reproduce. A withdrawal is only deliverable if the attacker's builtin
-writer is an established, in-order, reliable source — so the attacker must first be discovered (SPDP,
+What the harness must first reproduce. A withdrawal is only deliverable if its builtin writer is an
+established, in-order, reliable source — so it must first be discovered (SPDP,
 [§4.3](#43-carrier-b-hand-forged-rtps-without-ros-2)) and clear the reorder/HEARTBEAT gating, which is
 trivial for a *fresh* writer (sequence numbers from 1, its own HEARTBEAT vouching for them). It must
-also know the target's exact GUID, learned passively from the target's own announcements. The chain is:
-sniff discovery → learn the GUID → emit one keyed withdrawal.
+also know the target endpoint's exact GUID, learned passively from the target's own announcements. The
+chain is: observe discovery → learn the GUID → emit one keyed withdrawal. This is the study's
+instrument for driving a *silent* freshness-loss trace (no transition, no lease wait) so the monitor's
+absence-detection and safe-stop path can be exercised against the worst case.
 
-Liveliness and deadline are weak external levers. They are *matching* policies, not switches an
-outsider can flip: liveliness declares a writer not-alive when *the writer* stops asserting, and a
-deadline miss fires when samples fail to arrive — an attacker forces either only by blocking traffic
-(the physical layer). The one indirect path is blocking the target's discovery keepalives so the
-participant lease (default 10 seconds, `defconfig.c:45`) expires (`[INFERRED]`). Discovery-multicast
-flooding and malformed-packet destabilization are mention-level: plausible but resting on parser
-robustness and operating-system buffering, bounded by the `MaxMessageSize=65500B` limit and the IP
-fragmentation limits, and irreducibly `[UNVERIFIED]`.
+Liveliness and deadline are weak, indirect levers. They are *matching* policies, not switches: DDS
+liveliness declares a writer not-alive only when *the writer itself* stops asserting, and a deadline
+miss fires only when samples fail to arrive — so freshness is lost through the mechanism, not through
+these, which merely *report* it after the fact (and slowly). The one indirect path to force them is
+blocking discovery keepalives so the participant lease (default 10 seconds, `defconfig.c:45`) expires
+(`[INFERRED]`) — a 10-second detection floor, which is exactly why the monitor must key on
+arrival-timestamp gaps rather than DDS liveliness. Discovery-multicast overload and malformed-packet
+destabilization are mention-level: plausible but resting on parser robustness and operating-system
+buffering, bounded by the `MaxMessageSize=65500B` limit and the IP fragmentation limits, and
+irreducibly `[UNVERIFIED]`.
 
 ### 7.2 Physical level — cutting the simulated link (`lo`)
 
-Beneath every DDS gate is one interface: the loopback `lo`. Anyone with host access can disable
-communication under the whole application, forging nothing.
+Beneath every DDS gate is one interface: the loopback `lo`. Anyone with host access can halt
+communication under the whole application, forging nothing — the bluntest way freshness is lost, and
+(on the deployment bus) the bluntest safe-stop actuator.
 
 | Method | What it disrupts | Reachable from domain 0? | Reversible? |
 |---|---|---|---|
@@ -837,110 +1054,129 @@ communication under the whole application, forging nothing.
 | `ip link set lo down` | Kills all loopback traffic | No — host control | Yes: bring up |
 
 The one-command "multicast off" kill is documented behaviour in this deployment, grounded in the
-SPDP-multicast gate at `q_ddsi_discovery.c:314` ([§2.5](#25-discovery)). None of these can silence *one*
-element selectively — that selectivity is exactly what the protocol withdrawal buys. On the deployment
-bus, the equivalent is cutting an automotive Ethernet segment or CAN bus, which needs physical or
-switch-level control — a capability the Security Enforcement Unit's threat model gives the *defender*
-far more readily than a compromised ECU, so this ease does not transfer to the attacker.
+SPDP-multicast gate at `q_ddsi_discovery.c:314` ([§2.5](#25-discovery)). None of these halts *one*
+flow selectively — that selectivity is exactly what the protocol withdrawal offers. For the safe-stop
+reading this matters: the physical layer is an all-or-nothing actuator (it stops the whole vehicle
+network), whereas the protocol withdrawal is a scalpel that halts a single flow — the SEU would choose
+between them by how much of the system the fault has compromised. On the deployment bus the physical
+equivalent is cutting an automotive Ethernet segment or CAN bus, which needs switch-level control that
+an inline SEU has and a stray fault source does not.
 
 ### 7.3 Application level (new points only)
 
-The clean paths already covered, with only what is new for the "disable" framing: lifecycle
-deactivate/shutdown over `~/change_state` would be the only network-reachable *clean* disable, but it
-requires a managed node and — read from source ([§3.2](#32-four-distinct-shutdown-mechanisms)) — none
-of the command-topic owners are managed (all are plain `rclcpp::Node` components), so this path is
-simply absent here; a parameter change that gates a behaviour leaves the
-endpoint present in discovery, so it is invisible to a discovery-watching detector and shows only as a
-parameter-events entry; and publishing a countermanding command is the injection attack from the
-[injection section](#4-injecting-data-from-outside-the-simulation), not a disabling of the element,
+The clean paths already covered, with only what is new for the freshness-loss framing: lifecycle
+deactivate/shutdown over `~/change_state` would be the only network-reachable *clean, announced* way to
+stop a flow, but it requires a managed node and — read from source
+([§3.2](#32-four-distinct-shutdown-mechanisms)) — none of the command-topic owners are managed (all are
+plain `rclcpp::Node` components), so this path is simply absent here; a parameter change that gates a
+behaviour leaves the endpoint present in discovery, so the freshness clock keeps ticking on a topic
+whose values have silently stopped changing — a monitor watching only discovery would miss it, and it
+shows only as a parameter-events entry; and publishing a countermanding command is the fault-injection
+of [§4](#4-injecting-data-from-outside-the-simulation), a value fault rather than a freshness loss,
 noted only to keep the boundary clear.
+
+Closing block — §7 in monitor terms.
+
+1. The property. The same liveness/freshness pair as §3, now with the emphasis that the source can
+   go silent with **no** announced transition:
+   `G( pub(/control/command/gear_cmd) → F_[0,Δ_deadline] pub(/control/command/gear_cmd) )` and
+   `G( age(/control/command/gear_cmd) ≤ Δ_fresh )`, over both anchor topics. The endpoint withdrawal,
+   the `lo` cut, and the silent parameter-gate all violate liveness/freshness without a `TransitionEvent`
+   or clean SEDP withdrawal to precede them `[INFERRED]`.
+2. The trace event. **Arrival-timestamp gaps carry the property**, because the cheaper events are
+   absent or late here: a forged withdrawal produces a *dispose* SEDP record (`q_ddsi_discovery.c:520-522`)
+   but no clean whole-participant withdrawal; the `lo` cut produces nothing until the 10-second lease
+   expiry (`defconfig.c:45`); the parameter-gate produces only a parameter-events entry and no DDS
+   change at all. So the monitor must key on *missing* sample arrivals against `/clock`, not on any
+   positive DDS signal.
+3. The safe-stop decision. **Safe-stop** — this is the archetypal critical fault: an actuation topic
+   whose freshness is lost and which does not self-heal within an actuation period. §7 also supplies
+   the *actuation* half: a safe-stop that must halt a compromised flow can pull the protocol withdrawal
+   (one flow, scalpel) or the physical cut (whole network, blunt), chosen by blast radius. The decisive
+   robustness note is that DDS Security (authentication) flips the deletion guard to reject
+   unauthenticated withdrawals (`ddsi_security_omg.c:2052-2068`) `[code]` — closing the silent-withdrawal
+   fault at its source on the deployment build.
 
 ---
 
-## 8. Security Enforcement Unit implications, gathered
+## 8. Safety Enforcement Unit implications, gathered
 
-Every mechanism above is dual-use: an enforcement action the Security Enforcement Unit can take
-against a compromised element, and an attack against a legitimate one. The asymmetry the SEU relies
-on is that it is *authorized and can act at a trusted layer, whereas the attacker must forge at an
-untrusted one*. The detection surface is dominated by identity, QoS, and sequencing invariants that
-Cyclone's own matching and delivery rules force on any attacker — and those invariants transfer to the
-deployment bus even though the loopback co-location's trivial ease does not.
+This section gathers what the study surfaces for the runtime STL monitor: the **catalog of
+temporal/freshness (STL-shaped) properties** the mechanisms establish, each cross-referenced to the
+mechanism that defines, satisfies, or violates it, the trace event that lets an event-driven monitor
+evaluate it, and whether a violation is safe-stop-critical. Every property is `[INFERRED]` from the
+cited mechanism against the `/clock` time base; the concrete bounds (`Δ_fresh`, `Δ_deadline`,
+`f_max`/`f_min`) are control-layer parameters not fixed in the checkout. The consistent theme: on this
+stack **neither DDS nor the Autoware application freshness-gates, de-duplicates, or rate-limits the
+command path**, so every one of these properties must be owned by the monitor itself.
 
-Element shutdown.
-- The lifecycle `change_state` service is the only network-reachable clean lever in principle, but it
-  does not exist for the command-topic owners here: read from source ([§3.2](#32-four-distinct-shutdown-mechanisms)),
-  every one of them is a plain `rclcpp::Node` component, not a managed lifecycle node — and there is no
-  `LifecycleNode` subclass anywhere in Autoware Core or Universe. So there is no clean
-  network-reachable shutdown of these nodes at all, in either direction: the SEU cannot cleanly
-  `deactivate` a compromised command node over the network, and — the mirror benefit — an attacker
-  cannot cleanly disable a legitimate one either, and is driven to the forged protocol withdrawal in the
-  [disabling section](#7-disabling-an-element-without-a-clean-shutdown). (Where a managed node *does*
-  exist elsewhere, the `change_state` signature — a `TransitionEvent` plus a service client with a
-  foreign participant GUID — is still the thing to watch; it just does not arise on the command
-  path.)
-- `rclcpp::shutdown()` and node destruction are in-process calls with no DDS endpoint — the SEU sees
-  only their *effect* (endpoints withdrawing), useful as a reference for what a clean withdrawal looks
-  like, to distinguish it from a forged withdrawal. Signals and hard kills are host-level, not a domain-0
-  capability; the SEU should not model process-kill as a network threat, but can watch for the aftermath
-  of a hard kill (abrupt silence plus discovery-lease timeout).
+Property catalog.
 
-Injection.
-- Carrier A is maximally effective and maximally detectable: a new participant GUID belonging to
-  neither simulation participant appears in discovery, and a new command-topic writer appears in the
-  endpoint announcements; the injector had to offer `transient_local`, so even its QoS fingerprint is
-  fixed and predictable. On a bounded deployment the legitimate GUID set is knowable, so an
-  un-allowlisted command writer is, by itself, the attack.
-- The dropped injection is a quieter signature: a foreign writer whose QoS (VOLATILE) does not satisfy
-  the reader announces itself yet delivers nothing — a failed or reconnaissance injection visible
-  even though no sample crossed, which a content-only monitor would miss.
-- Carrier B is the deployment-realistic threat and the harder detection problem: the SEU's surface is
-  the set of invariants a forger must reproduce but a real endpoint never thinks about (GUID
-  consistency, an exact `transient_local` offer on a writer that never sent any history, monotonic
-  sequence numbers, and the exact CDR encapsulation and alignment).
+| # | STL-shaped property (over the anchor topics) | Mechanism that establishes/violates it | Trace event | Safe-stop? |
+|---|---|---|---|---|
+| P1 freshness | `G( age(/control/command/gear_cmd) ≤ Δ_fresh )`; same for `/system/operation_mode/state` | Publish path stamps + WHC latching (§2.3); readers set no lifespan (§5.3) | per-(topic,GUID) source timestamp vs `/clock` now | **Yes** |
+| P2 liveness | `G( pub(topic) → F_[0,Δ_deadline] pub(topic) )` | Any §3 shutdown or §7 silent freshness loss | arrival-timestamp gap | **Yes** |
+| P3 rate | `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )` | Over-publication vs. WHC back-pressure (§5.3) | inter-arrival of successive samples | freshness-conditional |
+| P4 value-freshness | `G( age ≤ Δ_fresh )` even for a *re-presented* value | Replay/over-pub deliver stale value under new seq (§5) | source timestamp, not sequence number | **Yes** |
+| P5 latency/jitter | `G( transit_latency(topic) ≤ Δ_lat )` | No wire prioritization knob reachable (§6) | arrival − source timestamp | precondition only |
 
-Replay and over-publication.
-- ROS-carried replay is content reuse under a foreign GUID with sequence numbers restarting from 1 —
-  the join of "known content" and "un-allowlisted GUID" is the detector.
-- Faithful replay betrays itself as a sequence-number anomaly: an already-seen (GUID, sequence
-  number) pair, or a jump forward under a real GUID without a consistent HEARTBEAT/GAP — the same anomaly
-  Cyclone already drops as too-old.
-- Over-publication is a per-(topic, writer) rate anomaly, self-limiting at the `WhcHigh=500kB`
-  watermark. Deadline is the *wrong* instrument — it fires on starvation, not excess, and the command
-  readers leave deadline and lifespan unset anyway ([§5.3](#53-over-publication-and-cyclones-flow-control)).
-  No DDS-layer de-duplication exists, and — now read from the node sources — the application does not
-  de-duplicate either: the command callbacks act on each value unconditionally, with no stamp,
-  counter, or equality guard. The SEU must therefore assume every repeated or replayed accepted command
-  changes vehicle behaviour; duplicate- and replay-rejection cannot be delegated to Autoware.
+Element shutdown → liveness (P2).
+- The lifecycle `change_state`/`TransitionEvent` is the only shutdown that *announces itself before*
+  the silence — a pre-silence trace event — but it does not exist for the command-topic owners here:
+  read from source ([§3.2](#32-four-distinct-shutdown-mechanisms)), every one is a plain `rclcpp::Node`
+  component, not a managed lifecycle node, and there is no `LifecycleNode` subclass anywhere in
+  Autoware Core or Universe. So on the command path the monitor gets **no early warning** and P2 must be
+  evaluated on arrival-timestamp gaps.
+- `rclcpp::shutdown()` and node destruction are in-process calls with no DDS endpoint — the monitor
+  sees only their *effect* (endpoints withdrawing, then arrivals stop). Signals and hard kills are
+  host-level; a hard kill leaves no clean withdrawal and is only visible as abrupt silence plus the
+  10-second discovery-lease timeout — again why arrival gaps, not DDS liveliness, carry P2.
 
-Prioritization.
-- The SEU cannot privilege enforcement traffic by QoS through ROS 2 — on SHARED readers, enforcer and
-  injector samples are treated identically (last write into keep-last-1 wins), so an SEU that tries to
-  out-prioritize is racing, not overriding. Real DDS-ownership privilege would require the Autoware
-  readers to request exclusive ownership and the enforcer to hold higher strength — a build-time
-  decision on both endpoints, not a runtime network action.
-- A priority/ownership attacker is loud: transport priority and ownership ride the endpoint
-  announcements, and every legitimate endpoint carries transport priority 0 and SHARED ownership, so any
-  non-zero priority or exclusive ownership on a command topic is anomalous at discovery time. A dominance
-  attempt mostly defeats itself: an exclusive-ownership writer fails the RxO ownership-kind match against
-  the SHARED reader and delivers nothing.
+Fault-injection harness (how the properties get exercised).
+- Carrier A drives an accepted off-nominal sample with one constraint: it must offer `transient_local`
+  or it is *uncoupled* (§4.2) and changes no trace — the study's worked example that an unmatched
+  producer leaves P1's freshness clock un-started (infinite staleness a naive reader cannot see).
+- Carrier B reproduces a source's full wire trace (GUID, sequence, HEARTBEAT), which is what a
+  faithful replay or a silent withdrawal (§7.1) needs. Its enumerated invariants are the knobs the
+  harness perturbs to author early/late/stale/wrong-value traces against P1–P4.
 
-Disabling at three layers.
-- The protocol withdrawal is the sharpest attacker tool and the SEU's clearest signature: watch for a
-  dispose/unregister whose *source* participant GUID prefix differs from the *endpoint or participant
-  GUID being disposed* (the exact check the code's own comment admits it omits — the SEU can enforce it),
-  dispose/re-announce flapping, or a dispose from an already-flagged foreign GUID. The decisive
-  mitigation is DDS Security (authentication), which flips the deletion guard to reject
-  unauthenticated withdrawals — the strongest recommendation for the deployment build.
-- The physical link is the SEU's home turf on the real network: an inline SEU can drop or rate-limit
-  a compromised ECU's frames at the switch — authoritative, per-source enforcement the attacker cannot
-  match without switch control.
-- The application levers are clean but conditional on lifecycle/parameter reachability, each carrying
-  its own foreign-GUID signature.
+Replay and over-publication → rate (P3) and value-freshness (P4).
+- ROS-carried replay re-presents old content under a fresh GUID with sequence numbers from 1: to the
+  monitor it is a fresh sample carrying a stale value — **P4 is violated even though DDS accepts it as
+  new**, because Cyclone's reorder/dedup only rejects a *bit-identical* (GUID, sequence) re-presentation
+  (`q_radmin.c:1979`), never a stale value under a new sequence number.
+- Over-publication is a per-(topic, writer) **P3** violation, self-limiting at the `WhcHigh=500kB`
+  watermark on the *publisher* side. Deadline is the wrong instrument — it fires on starvation, not
+  excess, and the command readers leave deadline/lifespan unset anyway
+  ([§5.3](#53-over-publication-and-cyclones-flow-control)). Because P3/P4 evaluation is O(1) per sample
+  (inter-arrival and age are scalars), total cost stays **linear** even under the abstract's 100× flood
+  `[LSEU-abstract]`. Neither DDS nor the application de-duplicates (the callbacks act on each value with
+  no stamp/counter/equality guard), so P3 and P4 cannot be delegated to Autoware.
 
-On the deployment network the ordering inverts by actor: the *attacker's* easiest layer is the protocol
-withdrawal (forgeable from any bus foothold); the *SEU's* strongest layer is the physical link
-(authoritative, inline, per-source). The protocol withdrawal is the method the SEU must detect; the
-link is the method it should enforce with.
+Prioritization → latency/jitter (P5).
+- No ROS-reachable QoS knob prioritizes or timing-shapes a flow — every endpoint carries transport
+  priority 0 and SHARED ownership (§6.1), and the network-channels/DSCP path is compiled out (§6.2). So
+  `Δ_lat` is whatever best-effort delivery yields; **P5 is a monitored precondition, not an enforceable
+  guarantee**, and a persistent latency breach escalates through P1 rather than firing on its own. The
+  deployment concern is that the monitor itself must run on a resource-constrained multicore RISC-V at
+  `<2%` CPU with negligible interference `[LSEU-abstract]`, which the linear per-event evaluation makes
+  feasible — not something this static study measures.
+
+Silent freshness loss + safe-stop actuation (§7).
+- The endpoint withdrawal, the `lo` cut, and the silent parameter-gate all violate **P2/P1 with no
+  announced transition** — the hardest case, caught only by arrival-timestamp gaps against `/clock`.
+- Read as *actuation*, the same three layers are how a safe-stop halts a flow: the protocol withdrawal
+  is a scalpel (one flow), the physical cut is blunt (whole network), the application lever is clean but
+  conditional on lifecycle/parameter reachability — the SEU chooses by how much of the system the fault
+  has compromised.
+- The decisive robustness note for the deployment build: DDS Security (authentication) flips the
+  deletion guard to reject unauthenticated withdrawals (`ddsi_security_omg.c:2052-2068`) `[code]`,
+  closing the silent-withdrawal fault at its source.
+
+The unifying conclusion: the wire mechanisms determine *whether each property can hold and how its
+violation becomes observable*, but they enforce none of them. The monitor derives P1–P5 from the data
+dependencies, evaluates them per-event against `/clock`, and safe-stops on a critical freshness or
+liveness violation — the pipeline the whole study feeds `[LSEU-abstract]`.
 
 ---
 
@@ -1031,10 +1267,15 @@ bottom-of-stack to top, then protocol, cache, QoS, ROS control surfaces, and stu
 
 | Term | Definition |
 |---|---|
-| **SEU (Security Enforcement Unit)** | The end-goal defender this study feeds; sits on the vehicle network to detect or block the catalogued faults. |
-| **Injection** | Getting an outside process's message *accepted* by a legitimate reader (clearing discovery plus topic/type/QoS matching), so its callback runs with the attacker's value. |
-| **Replay** | Re-sending *previously-seen* traffic so a subscriber accepts it as fresh. |
-| **Over-publication** | Emitting many (possibly synthetic) samples without capture; the fallback when faithful replay is blocked. |
+| **SEU (Safety Enforcement Unit)** | The end-goal runtime monitor this study feeds: a lightweight, event-driven unit that derives temporal/freshness constraints from data dependencies, formalizes them as STL properties, evaluates system traces, and executes a preemptive safe-stop on a critical violation `[LSEU-abstract]`. |
+| **STL (Signal Temporal Logic)** | The formalism in which each derived temporal/freshness constraint is written as a property (`G(...)`, `F_[a,b](...)`) evaluated against a trace. |
+| **Temporal constraint** | A bound a data dependency imposes, set by actuation frequency and data freshness — the thing an STL property encodes `[LSEU-abstract]`. |
+| **Freshness / age** | `age(topic)` = time since the currently-held sample's own source timestamp, measured against `/clock`; the core quantity of the freshness properties. |
+| **Trace event** | The observable an event-driven monitor consumes to evaluate a property — here a sample's (arrival timestamp, source timestamp, writer GUID, sequence number), a missed deadline, or a WHC stall. |
+| **Safe-stop** | The preemptive halt the SEU actuates when a critical temporal/freshness property is violated. |
+| **Fault injection** | Driving an off-nominal (early/late/stale/wrong-value/over-published) trace into a topic so the monitor is exercised and its safe-stop path validated — the study's test instrument, not an attack. |
+| **Replay** | Re-presenting *previously-seen* content so a subscriber treats it as fresh — a freshness (P4) fault, since the value's age exceeds the bound though DDS accepts it as a new sample. |
+| **Over-publication** | Emitting many (possibly synthetic) samples without capture; a rate (P3) fault, and the abstract's 100× stress case. |
 
 ---
 
@@ -1045,7 +1286,7 @@ simulation could not be executed, so anything requiring a live run or a packet c
 
 | Item | Status | What would settle it |
 |---|---|---|
-| Whether the container's Cyclone was built with type discovery — decides whether type matching (and a forged-RTPS attacker) needs a type *hash* or only a type *name* | `[UNVERIFIED]` | Inspecting the built library, or a wire capture showing type information in the endpoint announcements |
+| Whether the container's Cyclone was built with type discovery — decides whether type matching (and a hand-forged-RTPS harness carrier) needs a type *hash* or only a type *name* | `[UNVERIFIED]` | Inspecting the built library, or a wire capture showing type information in the endpoint announcements |
 | Whether the Autoware nodes owning the command topics are managed lifecycle nodes — decides whether the network-reachable clean `change_state` lever applies | `[code]` — **resolved: none are managed.** The command-topic owners are all plain `rclcpp::Node` components, and no `LifecycleNode` subclass exists anywhere in Autoware Core or Universe; the clean `change_state` lever does not apply to them (§3.2) | Settled from the Autoware node sources (`vehicle_cmd_gate.hpp:100`; base-class sweep of the checkout) |
 | Whether the Autoware *application* de-duplicates a repeated command (the DDS layer does not) | `[code]` — **resolved: it does not.** The anchor-topic callbacks act on each value unconditionally, with no stamp/counter/equality guard, so the app accepts a replayed command as fresh (§5.3) | Settled from the subscriber callbacks (`vehicle_cmd_gate.cpp:110-112`; `mrm_handler_core.cpp:163-165`) |
 | End-to-end acceptance of a hand-forged discovery + DATA (+ HEARTBEAT) sequence by this Cyclone build (Carrier B feasibility; the verbatim-replay *drop* is a confirmed code-path finding, not `[UNVERIFIED]`) | `[UNVERIFIED]` | A packet capture or bench test against the running container |
@@ -1056,3 +1297,5 @@ simulation could not be executed, so anything requiring a live run or a packet c
 | ROS command readers keep the DDS default SHARED ownership (the binding never sets ownership) | `[code]` — **confirmed.** The command subscriptions build QoS from `rclcpp::QoS(1).transient_local()` / `rclcpp::QoS{1}` and never set ownership (the `rclcpp` QoS class has no ownership setter); no C-API or direct-DDS path is used for them (§6.3) | Settled from the subscription QoS (`vehicle_cmd_gate.cpp:110-111`; `polling_subscriber.hpp:206`) |
 | A port-7400 drop starves discovery while established unicast flows briefly survive; participant-lease expiry (10 seconds) as an indirect kill when discovery keepalives are blocked | `[INFERRED]` | A packet capture of the port model and lease/renewal cadence |
 | Discovery-multicast flooding or malformed-packet destabilization | `[UNVERIFIED]` | Fuzzing the built library, or a packet capture |
+
+<!-- SAFETY-REVISION-COMPLETE -->

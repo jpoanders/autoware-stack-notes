@@ -1,10 +1,19 @@
-# Shared Foundation — AWSIM / Autoware Core / Cyclone DDS Fault-Injection Study
+# Shared Foundation — AWSIM / Autoware Core / Cyclone DDS: Temporal-Constraint & STL-Monitor Study
 
 > This is the **shared stack foundation** the five task reports reuse by reference. It is built
 > once here; no task re-derives it. It covers the layer map, the publish path to the wire, the
 > delivery-matching rules (topic-name mangling, type matching, QoS compatibility including the
 > `transient_local` durability rule), discovery (SPDP/SEDP on multicast over `lo`, domain 0,
 > GUIDs), and a seed glossary. It contains **none of the five task reports**.
+>
+> **What this foundation is *for*.** Every mechanism documented here exists in service of one
+> question: *where do the system's temporal and freshness constraints come from in the real
+> Cyclone DDS stack, and how can the wire behaviour satisfy, degrade, or violate them* — so that a
+> runtime **STL monitor** (the Safety Enforcement Unit, **SEU**) can observe a trace, evaluate the
+> derived property, and decide whether to trigger a **preemptive safe-stop**. The stack facts are
+> unchanged and still load-bearing; they are now read as the physical layer beneath a
+> temporal-constraint model, not as an attack surface. The new §0 below adds that layer above the
+> stack; §2–§5 then supply the mechanism each constraint rests on.
 >
 > **Source classes are kept distinct throughout.** `[repo]` = a file in this checkout under
 > `src/` (cited `path:line`). `[cyclone]` = Eclipse Cyclone DDS source, which **is present in this
@@ -15,6 +24,75 @@
 
 ---
 
+## §0. The layer above the stack — data dependency → temporal constraint → STL → trace → safe-stop
+
+**Motivation before mechanism.** An autonomous vehicle is a data-flow machine: components exchange
+samples, and a downstream actuator can only behave safely if the data it depends on arrives *often
+enough* and is *fresh enough*. Those two quantities — **actuation frequency** and **data freshness**
+— are what turn a data dependency into a *temporal constraint* `[LSEU-abstract]`. The SEU derives
+such constraints automatically from the pub/sub data dependencies, formalizes each as a **Signal
+Temporal Logic (STL)** property, evaluates system traces against it, and executes a preemptive
+safe-stop when a critical property is violated `[LSEU-abstract]`. This foundation supplies the
+missing physical half of that pipeline: the Cyclone DDS mechanism that decides whether a given
+property *can* hold on the wire.
+
+The end-to-end pipeline this study now serves:
+
+```
+data-centric pub/sub abstraction
+  → temporal constraint derived from a data dependency   (actuation frequency + data freshness)
+    → STL property for runtime verification
+      → event-driven capture & evaluation of the system trace
+        → preemptive safe-stop on a critical violation
+```
+
+**A worked example, on a real topic.** Take `/control/command/gear_cmd` — a command consumed by the
+actuation path, published `transient_local` (setup-guide §8). Two properties fall straight out of the
+data dependency:
+
+- **Freshness.** The actuator must never act on a stale gear command:
+  `G( age(/control/command/gear_cmd) ≤ Δ_fresh )`. Age is measured against **sim time**, which the
+  bridge publishes on `/clock` at a steady **~90–100 Hz** (setup-guide §6d); `Δ_fresh` is therefore
+  bounded in tens of milliseconds `[INFERRED from the /clock rate; the exact bound is a control-layer
+  parameter not fixed in the checkout]`.
+- **Liveness / rate.** A command source that has gone quiet is the strongest freshness violation:
+  `G( pub(topic) → F_[0,Δ_deadline] pub(topic) )` and a rate bound
+  `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )`.
+
+The whole rest of the foundation answers *where each of these bounds is set, satisfied, or lost* in
+Cyclone: the publish path (§3) is where a sample gets its timestamp, its per-writer sequence number,
+and enters the WHC; delivery matching (§4) is the gate that decides whether a producer and consumer
+are even coupled (a mismatch means the freshness clock never starts — infinite staleness that a naive
+reader cannot see); discovery (§5) sets how *fast* a new or returning source becomes observable, which
+bounds how quickly a liveness property can be re-satisfied.
+
+**The recurring closing block.** Every mechanism section below — and every downstream report — ends by
+translating its mechanism into monitor terms, in exactly three parts:
+
+1. **The property** — the temporal/freshness constraint the mechanism implies, written STL-shaped over
+   the real topics, with concrete bounds where the code/config gives them and `[INFERRED]` where derived.
+2. **The trace event** — what the event-driven monitor actually observes to evaluate that property
+   (a sample's arrival timestamp and sequence number, a missed deadline, a WHC stall), and at which
+   layer of the stack that observable is visible.
+3. **The safe-stop decision** — whether violating the property is critical enough to trigger a
+   preemptive safe-stop or is a degradation to log/flag, given the topic's role in actuation.
+
+**Fault injection is the test instrument, not the threat.** Where later reports build injectors,
+replay, or endpoint-withdrawal mechanisms, they are **fault-injection harnesses**: ways to drive
+off-nominal (early / late / stale / wrong-value / over-published) traces *into* the system so the STL
+monitor is exercised and its safe-stop path validated — this is the abstract's "extreme fault-injection
+stress tests," including the 100× network over-publication case `[LSEU-abstract]`. Where a fault could
+*also* be induced maliciously, that is at most a one-line aside; it is no longer the organizing idea.
+
+**Deployment target (why timing determinism matters).** The SEU runs on a resource-constrained
+multicore RISC-V executing mixed-criticality workloads, consuming `<2%` of core capacity with
+negligible interference on real-time tasks, and its verification algorithms scale linearly even under
+100× over-publication `[LSEU-abstract]`. **These are the abstract's motivation and target behaviour,
+NOT numbers this static source study measured** — the simulation cannot be run here (setup-guide §0).
+Any STL bound this study states is `[INFERRED]` from the code's timing mechanism, never "measured."
+
+---
+
 ## SCOPING GATE (Phase 1) — task ranking, reading order, cross-reference plan
 
 This block exists so a human can review the scope before the task reports are written. It is the
@@ -22,17 +100,17 @@ output of Phase 1 and reflects Phase 0 reconnaissance (below).
 
 ### DEEP / MEDIUM / MENTION ranking of the five tasks
 
-The rank reflects how much *new, source-traced* depth each report needs beyond this foundation, and
-how much novel Cyclone/RTPS territory it must open. It is not the reading order (that is dependency
-order, next section).
+The rank reflects **how much each task informs the STL monitor** — how directly its mechanism defines,
+satisfies, or violates a temporal/freshness property, and how much novel Cyclone/RTPS territory that
+requires. It is not the reading order (that is dependency order, next section).
 
-| Task | Rank | Why this rank |
+| Task | Rank | Why this rank (for the STL monitor) |
 |---|---|---|
-| **Task 2 — Data injection from an outside element** | **DEEP** | Two full paths (external rclcpp node vs. hand-forged RTPS) traced against a real `transient_local` command topic, plus one *dropped* injection trace. It anchors the injector that Tasks 3 and 4 reuse. Highest reuse, highest novelty. |
-| **Task 3 — Replay / over-publication** | **DEEP** | The replay verdict hinges on a subtle Cyclone-internal mechanism — per-writer `(GUID, sequence number)` tracking in the reader's reorder/RHC path and the WHC watermark — not on the public API. This is the hardest thing in the study to get right. |
-| **Task 1 — Configurable elements & element shutdown** | **DEEP** | Must keep four conflation-prone shutdown mechanisms distinct (`rclcpp::shutdown()` vs. node destruction vs. lifecycle transition vs. process kill), each with blast radius and external reachability, and resolve whether Autoware Core uses lifecycle nodes. Large enumeration + one potentially major externally-reachable finding. Feeds Task 4's application layer. |
-| **Task 5 — QoS for message prioritization** | **MEDIUM** | The central finding is crisp and already half-proven here: `TRANSPORT_PRIORITY` and `OWNERSHIP` are **absent** from both `rmw_qos_profile_t` and Cyclone's rmw QoS mapping (see §4.3), so prioritization is not reachable through rclcpp. The report is a bounded enumeration plus the "where would it live" answer (Cyclone XML / C API). Feeds Task 4's protocol layer. |
-| **Task 4 — Alternatives to shutdown (three layers)** | **MEDIUM** | A synthesis: protocol layer (SEDP dispose/unregister, liveliness/deadline), physical layer (`lo` multicast-off kill, iptables/tc on the discovery ports from §5), application layer (cross-ref Task 1). Much is cross-reference; the genuinely new tracing is the endpoint-withdrawal path. Some sub-parts (malformed-RTPS destabilization) are irreducibly `[UNVERIFIED]`. |
+| **Task 3 — Replay / over-publication** | **DEEP** | **Flagship.** This is the abstract's 100× over-publication stress case `[LSEU-abstract]`: a violated *rate/actuation-frequency* constraint. Its verdict hinges on a subtle Cyclone-internal mechanism — per-writer `(GUID, sequence number)` tracking in the reader's reorder/RHC path and the WHC watermark — which is exactly the observable the monitor keys on to detect over-publication and stays linear-cost under flood. Hardest thing in the study to get right. |
+| **Task 2 — Fault-injection harness (outside element)** | **DEEP** | The study's **test instrument**: two full paths (external rclcpp node vs. hand-forged RTPS) traced against a real `transient_local` command topic, plus one *dropped* injection trace. It is how off-nominal (early/late/stale/wrong-value) traces are driven into the system to exercise the monitor; Tasks 3 and 4 reuse it. Highest reuse. |
+| **Task 1 — Elements & shutdown → liveness/freshness loss** | **DEEP** | A source going silent is the strongest freshness violation and the archetypal critical fault a safe-stop must catch. Must keep four conflation-prone shutdown mechanisms distinct (`rclcpp::shutdown()` vs. node destruction vs. lifecycle transition vs. process kill), each with a distinct *freshness-loss signature*, and surface the hazard that a latched `transient_local` sample can mask a dead publisher from a naive freshness check. Feeds Task 4. |
+| **Task 5 — QoS → timing determinism & mixed-criticality** | **MEDIUM** | Decides whether the temporal constraints can be met *on the wire at all*, and whether the monitor can run on a resource-constrained multicore RISC-V without disturbing real-time tasks `[LSEU-abstract]`. The crisp finding is half-proven here: `TRANSPORT_PRIORITY`/`OWNERSHIP` are **absent** from `rmw_qos_profile_t` and the rmw QoS mapping (§4.3), so latency/jitter shaping is not reachable through rclcpp — it lives only in Cyclone XML/C-API. Feeds Task 4. |
+| **Task 4 — Silent freshness loss + safe-stop actuation** | **MEDIUM** | The three layers are both (a) ways data freshness is lost *without* a clean shutdown signal — the hardest case for a monitor — and (b) candidate mechanisms by which a safe-stop could actually halt a flow: protocol (SEDP dispose/unregister, liveliness/deadline), physical (`lo` multicast-off, iptables/tc on the discovery ports from §5), application (cross-ref Task 1). Much is cross-reference; the new tracing is the endpoint-withdrawal path. Malformed-RTPS destabilization stays `[UNVERIFIED]`. |
 
 No task is a pure **MENTION** — all five are required full reports — but Task 4's malformed-RTPS
 sub-point and Task 5's `OWNERSHIP` sub-point are MENTION-level within their reports (documented,
@@ -103,9 +181,12 @@ anything settled only by running the sim (`[UNVERIFIED]`).
 **Realism caveat (applies study-wide).** Everything below describes a stack where container and
 simulator share one host network namespace and one Cyclone domain on `lo`. That co-location makes
 discovery and matching automatic for any host process — but it is a **simulation artifact**. The SEU
-this study feeds defends a *real vehicular network* (a compromised ECU on automotive Ethernet/CAN).
-Where a "how easy is this" or "how detectable is this" judgment depends on the loopback co-location,
-the task reports say so explicitly rather than transferring the ease to the deployment threat model.
+this study feeds is a runtime STL monitor for a *real AV network*, where the same data dependencies
+impose the same temporal/freshness constraints but the transport is automotive Ethernet/CAN rather
+than loopback. Where a "how fast is a fault observable" or "how easily can this trace be injected"
+judgment depends on the loopback co-location, the task reports say so explicitly rather than
+transferring the ease to the deployment target — a constraint the monitor must hold on-vehicle may be
+observable on a slower schedule there than on `lo`.
 
 ---
 
@@ -225,6 +306,25 @@ can be resent history), and hands it to the packing layer that emits the RTPS DA
   default here, `[INFERRED: no WriterBatching set in the setup-guide XML]`), each `publish` flushes
   immediately, so one publish ≈ one wire send.
 
+**What this means for the monitor.**
+
+1. **The property.** The publish path is where a sample first acquires the two quantities every
+   temporal property is written over: its **timestamp** (`dds_write_impl(..., dds_time(), 0)`,
+   `dds_write.c:55`) and its **per-writer sequence number** (`seq = ++wr->seq;`, `q_transmit.c:1286`).
+   Those underwrite both a freshness bound `G( age(topic) ≤ Δ_fresh )` (from the timestamp) and a rate
+   bound `G( inter_arrival(topic) ∈ [1/f_max, 1/f_min] )` (from arrival spacing and monotone
+   sequence). With batching off, one publish ≈ one wire send, so the trace's sample count tracks the
+   producer's publish count 1:1 `[INFERRED]`.
+2. **The trace event.** The observable is a single delivered sample carrying `(writer GUID, seq,
+   source timestamp)`; the monitor sees it either at RTPS DATA receipt on the wire (`[spec]` layout,
+   realized by Cyclone's `nn_xpack`/`q_xmsg`) or at the reader's data-available callback above ddsc.
+   Monotone `seq` lets it detect gaps (loss) and duplicates (replay, Task 3) without payload parsing.
+3. **The safe-stop decision.** This section only establishes the observables; whether a given
+   deviation is safe-stop-critical is decided per topic in §4–§5 and the task reports. The load-bearing
+   fact here: because CDR/seq/WHC are all assigned *inside Cyclone* (step 6 onward), a monitor tapping
+   above rmw sees ROS-typed samples with no seq, while a wire tap sees seq but must decode CDR — the
+   tap layer is a monitor design choice this path makes explicit.
+
 ---
 
 ## §4. Delivery-matching rules — what makes a reader accept a writer
@@ -340,6 +440,25 @@ why defaults matter — an injector that leaves durability unset offers volatile
 through the binding, not "unspecified", because `create_readwrite_qos` always calls a
 `dds_qset_durability` (`rmw_node.cpp:2052-2074`) `[repo]`.
 
+**What this means for the monitor.**
+
+1. **The property.** Matching is the precondition for *every* temporal property: an RxO mismatch is
+   not a slow channel, it is *no channel* — the two endpoints never couple, so
+   `age(topic) → ∞` and the actuator never receives a fresh sample at all. The relevant STL is the
+   coupling premise beneath `G( age(/control/command/gear_cmd) ≤ Δ_fresh )`: the reader's requested
+   durability must be satisfiable by the writer's offered durability (`rd.durability.kind ≤
+   wr.durability.kind`, `q_qosmatch.c:167`), else the freshness clock never starts.
+2. **The trace event.** This is visible *before any data sample* — the offered/requested QoS is
+   carried in the SEDP announcement (§5), so a monitor watching SEDP can flag an unsatisfiable pairing
+   (a `transient_local` command reader with no matching offered writer) at discovery time, rather than
+   waiting for a freshness deadline to expire against a channel that will never deliver.
+3. **The safe-stop decision.** For a `transient_local` command topic (`/control/command/gear_cmd`,
+   `/system/operation_mode/state`), a *persistently* unmatched consumer is safe-stop-critical: the
+   actuation path is receiving nothing. A subtler hazard, deferred to Task 1, is the inverse — a
+   matched `transient_local` reader keeps latching the *last* delivered sample, so a dead publisher can
+   look alive to a naive age check; the freshness property must therefore be evaluated against fresh
+   arrivals, not against the latched value.
+
 ---
 
 ## §5. Discovery — SPDP/SEDP on multicast over `lo`, domain 0, GUIDs (DEEP)
@@ -377,9 +496,10 @@ discovered within one SPDP period**, which Task 2 cites for the "late-joining pa
 writers/readers (topic name, type name/id, and full QoS) over the SEDP publications/subscriptions
 builtin writers, using the `SEDP_KIND_{READER,WRITER,TOPIC}` classification
 (`q_ddsi_discovery.c:58-62`) `[repo]`. The QoS carried in SEDP is exactly what `qos_match_mask_p`
-(§4.3) later compares — so **the durability an injector offers is visible on the wire in its SEDP
-announcement before a single data sample is sent.** That is the SEU's earliest detection surface and
-Task 2/Task 4 both rely on it.
+(§4.3) later compares — so **the QoS a producer offers (durability, deadline, liveliness) is visible
+on the wire in its SEDP announcement before a single data sample is sent.** That is the monitor's
+earliest trace observable: it can evaluate the *coupling* and *declared-timing* premises of a
+freshness/rate property at discovery time, ahead of the first sample. Task 2/Task 4 both rely on it.
 
 **Domain 0 and the ports.** The effective domain is 0 (setup-guide §2: `Domain Id="any"` →
 effective 0). Cyclone computes RTPS ports from `port = dg*domain_id + base + pg*participant_index +
@@ -411,18 +531,38 @@ multicast-capable, Cyclone disables multicast and cannot complete participant di
 the guide's "Failed to find a free participant index for domain 0" crash (setup-guide §3, §9). Task
 4 cites `ip link set lo multicast off` as a one-command link-layer kill on this basis.
 
-**GUID as a signature.** The participant GUID prefix is generated locally per process; any process
-that joins domain 0 — including an injector — carries a GUID prefix **not belonging to the two
-legitimate sim participants** (AWSIM and the Autoware container). `[INFERRED: the prefix is
+**GUID as a trace key.** The participant GUID prefix is generated locally per process; any process
+that joins domain 0 — including the fault-injection harness — carries a GUID prefix **distinct from
+the two nominal sim participants** (AWSIM and the Autoware container). `[INFERRED: the prefix is
 process-local and random/host-derived, so a third participant is distinguishable by prefix; the
-exact generation routine is in Cyclone init and not quoted here]`. Establishing the exact prefix
-derivation is deferred to Task 2, where the "foreign participant GUID" signature is developed.
+exact generation routine is in Cyclone init and not quoted here]`. For the monitor this matters as
+*provenance*: `(writer GUID, seq)` keys a per-source trace, so it can attribute an over-published or
+off-rate stream to a specific producer and tell a returning legitimate source from an injected one.
+Establishing the exact prefix derivation is deferred to Task 2.
 
 **Realism caveat.** On this loopback setup, any host process that joins domain 0 is discovered and
-matched with no network boundary to cross (setup-guide §0; the-new-investigation-layer point 3). On
-the deployment network the SEU defends, a compromised ECU would still have to reach the discovery
-multicast group on the vehicle bus — the *discovery mechanics* transfer, but the *trivial ease* does
-not. Task 2 and Task 4 carry this distinction wherever a detectability judgment depends on it.
+matched with no network boundary to cross (setup-guide §0). Discovery latency therefore sets how fast
+a new or returning source becomes *observable* to the monitor — one SPDP period (default 30 s) in the
+worst case, faster with unicast — which bounds how quickly a liveness property can be re-satisfied
+after a source returns. The *discovery mechanics* transfer to the deployment AV network, but the
+*loopback timing* does not: on the real bus the same rendezvous may be slower, so a liveness
+`Δ_deadline` tuned on `lo` must be re-derived on-vehicle. Task 2 and Task 4 carry this distinction
+wherever an observability timing judgment depends on it.
+
+**What this means for the monitor.**
+
+1. **The property.** Discovery underwrites the *liveness* class:
+   `G( pub(topic) → F_[0,Δ_deadline] pub(topic) )`. A source that dies and returns is only observable
+   again after re-discovery, so `Δ_deadline` for a re-appearing producer is floored by the SPDP period
+   (30 s, `defconfig.c:36`) unless unicast shortcuts it `[INFERRED]`.
+2. **The trace event.** The observables are the SPDP/SEDP announcements themselves — a participant
+   appearing or disappearing (SPDP builtin writer `0x100c2`), and its endpoints with topic/type/QoS
+   (SEDP `0x3c2`/`0x4c2`) — keyed by GUID prefix, all visible on the fixed discovery multicast port
+   (7400 on domain 0) before user data flows.
+3. **The safe-stop decision.** A monitored command source that leaves discovery (SEDP dispose /
+   participant SPDP timeout) and does not re-appear within its liveness deadline is safe-stop-critical
+   for a `transient_local` actuation topic — this is the clean-shutdown case Task 1 treats, versus the
+   silent-loss case (no dispose, stale latched sample) Task 4 treats as the harder monitor problem.
 
 ---
 
@@ -459,7 +599,14 @@ bottom-of-stack to top, then protocol terms.
 | **Multicast** | One-to-many delivery; discovery here uses ASM multicast on `lo` (port 7400, domain 0). Disabling it on `lo` breaks the system (setup-guide §3). |
 | **Lifecycle node** | A ROS 2 managed node with an explicit state machine (configure/activate/deactivate/shutdown) exposed as network services. Whether Autoware Core uses these is a Task 1 question. |
 | **NodeOptions / InitOptions / Context** | rclcpp/rcl configuration objects for a node, an init, and the shared process-wide context that `rclcpp::shutdown()` tears down (Task 1). |
-| **SEU** | Security Enforcement Unit — the end-goal defender this study feeds; sits on the vehicular network to detect/block the catalogued faults. |
+| **SEU** | **Safety Enforcement Unit** — the end-goal monitor this study feeds: a lightweight, event-driven runtime-verification unit that captures system traces, evaluates them against automatically-derived STL properties, and executes a preemptive safe-stop on a critical temporal/freshness violation `[LSEU-abstract]`. (Not a *Security* unit — it enforces safety-timing properties, not an access/threat policy.) |
+| **STL (Signal Temporal Logic)** | The temporal logic the SEU's properties are written in: predicates over signals with time-bounded operators (`G`/globally, `F`/eventually, intervals `[a,b]`). Freshness, liveness, and rate bounds (§0) are STL properties. |
+| **Temporal constraint** | A timing requirement a data dependency imposes on the system, determined by **actuation frequency** and **data freshness** `[LSEU-abstract]`; the SEU derives these automatically from the pub/sub graph and formalizes each as an STL property. |
+| **Data freshness** | How recently a consumed sample was produced: `age(topic) = now − source_timestamp`, measured against sim time on `/clock` (~90–100 Hz, setup-guide §6d). A freshness constraint bounds `age`. |
+| **Actuation frequency** | The rate at which an actuation-relevant topic must be (re)published for the consumer to act safely; sets the rate/liveness bound `inter_arrival(topic) ∈ [1/f_max, 1/f_min]`. |
+| **Trace / trace event** | The time-stamped stream of observables the event-driven monitor evaluates — sample arrivals with `(writer GUID, seq, source timestamp)`, missed deadlines, WHC stalls, SPDP/SEDP appearances — at whichever stack layer the SEU taps. |
+| **Safe-stop** | The preemptive halt the SEU triggers when a *critical* STL property is violated (as opposed to logging a non-critical degradation) `[LSEU-abstract]`; criticality is judged by the topic's role in actuation. |
+| **Fault injection** | Driving off-nominal (early/late/stale/wrong-value/over-published) traces into the system to exercise the monitor and validate its safe-stop path (the abstract's "extreme fault-injection stress tests," incl. 100× over-publication) `[LSEU-abstract]` — the study's test method, not an attack. |
 
 ---
 
@@ -494,6 +641,11 @@ bottom-of-stack to top, then protocol terms.
   not yet quoted (§5) — developed in Task 2.
 - `[UNVERIFIED]` Anything requiring the running sim or a packet capture (actual port bindings, actual
   SEDP contents on the wire, timing).
+- `[LSEU-abstract]` The SEU's purpose (STL runtime verification, event-driven trace capture, preemptive
+  safe-stop) and its target metrics (`<2%` CPU, negligible RT interference, linear verification cost
+  under 100× over-publication) come from the unpublished abstract, as motivation and target behaviour —
+  this static source study does **not** measure them. Every STL bound stated in §0/§3/§4/§5 is
+  `[INFERRED]` from the code's timing mechanism, not observed.
 
 **Per-section confidence:**
 
@@ -505,5 +657,6 @@ bottom-of-stack to top, then protocol terms.
 | §4.2 Type matching | MEDIUM | Type-name construction is HIGH; the name-vs-hash question depends on an `[UNVERIFIED]` build flag. |
 | §4.3 QoS / durability rule | HIGH | The comparison and enum ordering are both in-checkout Cyclone source. |
 | §5 Discovery | MEDIUM-HIGH | Builtin ids, ports, SPDP/SEDP writers, interval all in-checkout; the *contents on the wire* and GUID-prefix derivation are `[UNVERIFIED]`/deferred. |
+| §0 Temporal-constraint / STL layer | MEDIUM | The mechanism anchors (`/clock` rate, timestamp/seq assignment, WHC, RxO gate) are `[repo]`/`setup-guide`; the STL bounds derived from them are `[INFERRED]` and the SEU's purpose/metrics are `[LSEU-abstract]`, not measured here. |
 
-<!-- REPORT-COMPLETE -->
+<!-- SAFETY-REVISION-COMPLETE -->
