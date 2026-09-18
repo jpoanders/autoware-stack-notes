@@ -1,0 +1,16 @@
+// Stage-1 harness type. Top-level type name resolves to
+//   autoware_vehicle_msgs::msg::dds_::VelocityReport_
+// which matches the real ROS 2 mangled type name (recon: discovery is NAME-ONLY,
+// no type hash), so this is wire-faithful for topic/type matching. Nested member
+// modules differ cosmetically from the real std_msgs/builtin_interfaces types;
+// immaterial here because both harness ends share this one IDL.
+module autoware_vehicle_msgs { module msg { module dds_ {
+  struct Time_    { int32 sec; uint32 nanosec; };
+  struct Header_  { Time_ stamp; string frame_id; };
+  struct VelocityReport_ {
+    Header_ header;
+    float longitudinal_velocity;
+    float lateral_velocity;
+    float heading_rate;
+  };
+};};};

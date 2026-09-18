@@ -145,7 +145,15 @@ prefix** on the wire (the stack was not launched), and whether **DDS Security** 
 
 ---
 
-## Phase 2 — Module 1: Freshness-loss injection (forged withdrawal)
+## Phase 2 — Module 1: Freshness-loss injection (forged withdrawal) — **DONE**
+
+> **Built and validated on the lab PC, 2026-09-18** — see `reports/poc-phase2-report.md`.
+> Stage-1 harness (`poc-harness/`) forges one keyed SEDP DISPOSE|UNREGISTER on a
+> foreign builtin `0x3c2`; the victim consumer deletes the real speed writer's proxy
+> with no authorization check, while the real writer keeps publishing (142/142
+> `write_rc=OK`) and the consumer's `age` property fires (`STALE 173 ms →` unbounded).
+> Negative control: 134 samples, 0 `STALE`. The hybrid carrier (real participant +
+> one forged DATA) settled the forged-acceptance and fresh-writer-gating unknowns.
 
 ### Build
 Chain (wiki §7.1): **sniff discovery → learn target writer GUID → emit one keyed withdrawal.**
@@ -242,8 +250,8 @@ detects staleness on wire evidence alone.
 | Speed reader durability (transient_local vs volatile) | recon | Sets Module 2 Carrier A QoS | **RESOLVED: VOLATILE** (`poc-recon.md`) |
 | Live speed writer GUID | runtime | Module 1's required input | **RESOLVED: `…:1303`** (`poc-recon.md`) |
 | Type discovery (type **hash** vs name-only) | `[UNVERIFIED]` §2.4/§10 | Discovery forgery (Module 1 builtin writer & Carrier B) | **RESOLVED: name-only** (`poc-recon.md`) |
-| End-to-end acceptance of hand-forged discovery+DATA(+HEARTBEAT) | `[UNVERIFIED]` §4.3/§10 | Carrier B feasibility; also the withdrawal's HEARTBEAT gating | bench test / capture against the running build |
-| Exact reorder/HEARTBEAT gating a fresh builtin writer must clear | `[INFERRED]` §7.1 | "Trivial for a fresh writer" is an inference — verify the withdrawal is actually accepted | harness test: does the proxy writer get deleted? |
+| End-to-end acceptance of hand-forged discovery+DATA(+HEARTBEAT) | `[UNVERIFIED]` §4.3/§10 | Carrier B feasibility; also the withdrawal's HEARTBEAT gating | **RESOLVED (Module 1, hybrid): accepted** `[runtime]` (`poc-phase2-report.md`) — full from-scratch SPDP forge still open for Carrier B |
+| Exact reorder/HEARTBEAT gating a fresh builtin writer must clear | `[INFERRED]` §7.1 | "Trivial for a fresh writer" is an inference — verify the withdrawal is actually accepted | **RESOLVED: SN 1 + HB(1,1) accepted, proxy writer deleted** `[runtime]` (`poc-phase2-report.md`) |
 | DDS Security compiled in? | `[UNVERIFIED]` §7.1/§10 | Flips the *participant*-kill guard (endpoint withdrawal has no guard either way); would block the forged-withdrawal fault path | inspect built lib; test an authenticated build |
 
 ---
@@ -313,7 +321,7 @@ actuation channel is exactly the accident-preventing case the SEU is built for (
 | Stage | Pass condition |
 |---|---|
 | Recon | Topic/type/reader-QoS cited from source; live speed-writer GUID captured; legit GUIDs recorded — **DONE** (`poc-recon.md`) |
-| Module 1 | Real monitor's `publish()` keeps succeeding **and** its DATA is still on-wire, yet the consumer stops receiving from its GUID (proxy writer deleted) — the trace shows `age` diverging |
+| Module 1 | **PASS** `[runtime]` 2026-09-18 (`poc-phase2-report.md`): 142/142 `write_rc=OK`, DATA still on-wire post-dispose (unmatched `…:203?`), consumer starved at sample 61, `age` diverged (`STALE 173 ms →`); negative control 134 samples / 0 `STALE` |
 | Module 2 | Consumer logs the injected `longitudinal_velocity` under a foreign GUID; SEDP shows the foreign writer with the expected QoS |
 | Combined | Consumer evaluates the injected speed while the real monitor is provably still publishing; (Stage 2) the SEU's preemptive safe-stop fires |
 | Oracle | Each module's STL-violating trace is present in a capture and, replayed against the derived property, evaluates to a violation — feed these traces to the SEU as labeled positives |

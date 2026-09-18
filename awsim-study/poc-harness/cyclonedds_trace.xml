@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <Interfaces><NetworkInterface name="lo" multicast="true"/></Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+    </General>
+    <Internal>
+      <SocketReceiveBufferSize min="20MB"/>
+    </Internal>
+    <Tracing>
+      <Category>discovery,data</Category>
+      <OutputFile>${CDDS_TRACE_FILE}</OutputFile>
+      <Verbosity>finest</Verbosity>
+    </Tracing>
+  </Domain>
+</CycloneDDS>
