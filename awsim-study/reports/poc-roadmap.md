@@ -130,6 +130,9 @@ Recon resolved it to **VOLATILE** on every consumer found in source *and* on the
   one-command restart of both halves. Same capture/forge tooling on the host. On this stage the real
   downstream **safe-stop behavior** (control/localization reaction) can be observed, not just the
   trace.
+- **Concrete execution runbook: `reports/poc-stage2-run-plan.md`** — milestones S2-0 (bring-up +
+  observability + snapshot), S2-1 (Module 1 live), S2-2 (Module 2 live), S2-3 (Phase 4 combined +
+  end-to-end safe-stop), each with go/no-go gates. Read-only preflight: `./stage2-preflight.sh`.
 
 ---
 
@@ -222,6 +225,21 @@ detects staleness on wire evidence alone.
   fingerprint appears before the first injected sample.
 - The trace now carries a value the real monitor never produced — the input the STL value/freshness
   property is evaluated against.
+
+---
+
+## Phase 3b — Module 3 (FI1): Data-age / stuck-sensor injection — **bench DONE**
+
+FI1 injects **old data with new timestamps** (a stuck sensor), replayed at 1×/2×/10×. It reuses
+Carrier A (a real Path A writer) because verbatim replay is dropped by the reorder admin
+(`task-3-report.md:37-64`); the old *payload* is re-emitted through a live writer that gets a fresh
+`seq`, and apparent age is set purely by the `header.stamp` field (`task-1-report.md:696-700`).
+Artifacts: `poc-harness/src/fi1_stuck_sensor.c`, extended `trusting_consumer.c`,
+`inject/fi1_seu_check.py`, `run_fi1.sh`. **Bench validated** (2026-09-24, `run_fi1.sh --bench`): the
+fresh-stamp stuck sensor is invisible to arrival- and stamp-freshness, caught only by the value-age
+property **P_stuck**; back-dating trips **P_age**; 2×/10× trip **P_rate** (consumer-side deadline, not
+writer WHC stall on this small topic); a windowed replay of *varying* old values evades P_stuck. Full
+write-up: [`fi1-data-age-report.md`](fi1-data-age-report.md). Live run = milestone **S2-4**.
 
 ---
 

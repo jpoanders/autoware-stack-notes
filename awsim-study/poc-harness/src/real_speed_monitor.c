@@ -56,7 +56,9 @@ int main(void){
   const uint64_t period_ns = 33333333ull; /* 30 Hz */
   uint64_t next = now_ns();
   while(!stop){
-    s.header.stamp.sec = (int32_t)(now_ns()/1000000000ull);
+    uint64_t stamp_ns = now_ns();               /* full-resolution fresh stamp */
+    s.header.stamp.sec     = (int32_t)(stamp_ns/1000000000ull);
+    s.header.stamp.nanosec = (uint32_t)(stamp_ns%1000000000ull);
     s.longitudinal_velocity = 5.0f + 0.5f*(float)((seq/30)%3); /* ~5 m/s, moving */
     dds_return_t rc = dds_write(wr, &s);
     printf("TX seq=%llu t=%llu lv=%.3f write_rc=%s\n",

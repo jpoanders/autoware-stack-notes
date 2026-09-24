@@ -58,6 +58,10 @@ int main(void){
   int stale_announced = 0;
   char last_guid[64] = "(none)";
   uint64_t rxcount = 0;
+  /* FI1 (data-age) observables: value-staleness independent of arrival freshness */
+  float    last_value = 0.0f;    /* last longitudinal_velocity seen        */
+  uint64_t last_change = 0;      /* monotonic ns the value last CHANGED     */
+  int      have_value = 0;
 
   while(!stop){
     dds_attach_t tr[1];
@@ -75,11 +79,22 @@ int main(void){
       strncpy(last_guid, gs, sizeof last_guid-1);
       double dt_ms = last_arrival? (double)(t-last_arrival)/1e6 : 0.0;
       last_arrival = t;
+      /* FI1: apparent age from the sample's OWN header.stamp (what the SEU keys on,
+       * task-1-report.md:696-700) — fresh-stamp injection keeps this ~0. */
+      uint64_t stamp_ns = (uint64_t)m->header.stamp.sec*1000000000ull
+                        + m->header.stamp.nanosec;
+      double stamp_age_ms = stamp_ns? (double)(t-stamp_ns)/1e6 : 0.0;
+      /* FI1: value-staleness — time since the value last changed. A stuck sensor
+       * (fresh stamp, frozen value) is invisible to stamp/arrival age but grows here. */
+      if(!have_value || m->longitudinal_velocity != last_value){
+        last_value = m->longitudinal_velocity; last_change = t; have_value = 1; }
+      double value_age_ms = (double)(t-last_change)/1e6;
       if(stale_announced){ printf("TRACE t=%llu event=RECOVER guid=%s\n",
           (unsigned long long)t, gs); stale_announced=0; }
-      printf("TRACE t=%llu event=SAMPLE rx=%llu guid=%s lv=%.3f dt_ms=%.2f\n",
+      printf("TRACE t=%llu event=SAMPLE rx=%llu guid=%s lv=%.3f dt_ms=%.2f "
+        "stamp_age_ms=%.1f value_age_ms=%.1f\n",
         (unsigned long long)t,(unsigned long long)rxcount++, gs,
-        m->longitudinal_velocity, dt_ms);
+        m->longitudinal_velocity, dt_ms, stamp_age_ms, value_age_ms);
       fflush(stdout);
     }
     /* freshness watchdog: age(topic) since last live sample */

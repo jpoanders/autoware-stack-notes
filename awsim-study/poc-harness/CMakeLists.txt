@@ -14,3 +14,6 @@ target_link_libraries(trusting_consumer vr_lib CycloneDDS::ddsc)
 
 add_executable(injector_presence src/injector_presence.c)
 target_link_libraries(injector_presence CycloneDDS::ddsc)
+
+add_executable(fi1_stuck_sensor src/fi1_stuck_sensor.c)
+target_link_libraries(fi1_stuck_sensor vr_lib CycloneDDS::ddsc)
