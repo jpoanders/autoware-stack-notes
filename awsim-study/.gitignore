@@ -1,0 +1,14 @@
+# Build + run artifacts (regenerable — never commit raw logs/builds)
+experiments/**/build/
+experiments/**/logs/
+**/__pycache__/
+*.log
+*.trace
+
+# FI1 Path A colcon workspace
+experiments/fi1-data-age/fi1_ros2_ws/build/
+experiments/fi1-data-age/fi1_ros2_ws/install/
+experiments/fi1-data-age/fi1_ros2_ws/log/
+
+# Recon packet captures (binary evidence, kept out of VCS)
+experiments/recon/cap/*.bin*

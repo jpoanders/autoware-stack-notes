@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>autoware_vehicle_msgs</name>
+  <version>0.0.0</version>
+  <description>Minimal vendored overlay (VelocityReport only) so the FI1 Path A node
+  builds on a bare host. In the Autoware container, skip this and use the real package
+  (colcon build --packages-select fi1_injection).</description>
+  <maintainer email="jpoanders@gmail.com">janders</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <depend>std_msgs</depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
