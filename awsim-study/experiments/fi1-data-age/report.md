@@ -54,6 +54,7 @@ VOLATILE + KEEP_LAST(1)** (`experiments/recon/report.md:45`), parameterized on:
 | Axis | Values | Effect |
 |---|---|---|
 | `--value-mode` | `stuck` \| `replay-window` | frozen old value, or a looping window of old values |
+| `--value-source` | `synthetic` \| `capture` | made-up payload, or the live writer's own recent samples captured off the topic (Path A node only) |
 | `--stamp-mode` | `fresh` \| `old` | `header.stamp = now` (defeats freshness-by-stamp) or back-dated by `--backdate-ms` (age > expiry) |
 | `--rate-mult` | `1` \| `2` \| `10` | emit at 30/60/300 Hz (jitter → deadline pressure) |
 
@@ -152,6 +153,69 @@ The `--live`/`--ros` paths are wired in `run_fi1.sh`; they refuse to run without
 importable (i.e. off the container/overlay), `--live` refuses to run off `ml-XPS-8960`, and both leave
 the GUID recapture + dispose manual on purpose (a mistyped GUID disposes the wrong proxy).
 
+### 4.1 Live run (S2-4, coexist) — results `[runtime]`
+
+**Run:** 2026-09-25 12:53–13:12 on `ml-XPS-8960`. AWSIM-Demo-Lightweight + `autoware:core-humble`
+container, both on Cyclone over `lo`. The Path A node ran inside the container
+(`ros2 run fi1_injection fi1_stuck_sensor --sim-time …`). The tap ran on the host, and a rosbag was
+recorded in the container. The harness is in `live/`
+(`run_case.sh NAME DUR [node args | --baseline]`, `reset_aw.sh`, `engage.sh`). Raw logs and bags are in
+`logs/live/` (gitignored). The bring-up was scripted: the initial pose is published at the GNSS position
+(NDT's align converges the heading to 33.8°, NVTL 3.18), the goal is placed 80 m ahead, and autonomous
+mode is engaged with the latched mode/gear topics from setup-guide §8. The stack was restarted and the
+vehicle teleported back to spawn before every case.
+**Load caveat:** another user's CARLA (Epic, offscreen) and a Python AV stack shared the GPU/CPU for
+the whole run, so the timing numbers (P_rate, achieved rate) are pessimistic.
+
+**S2-0 facts settled.** The real writer is node `AWSIM`, RELIABLE / VOLATILE / KEEP_LAST(1). The only
+Autoware reader is `/sensing/vehicle_velocity_converter`, RELIABLE / VOLATILE / KEEP_LAST(10). The
+converter feeds `twist_with_covariance` into the EKF, so the velocity channel reaches **localization**
+before it reaches control.
+
+Only the **coexist** case was run. Silence-then-inject was not run: the dispose is still manual by
+design.
+
+| Case | Injected (the rest is the real AWSIM writer) | Tap SEU (combined stream) | Per-GUID P_stuck on injector | Autoware reaction (bag) |
+|---|---|---|---|---|
+| S0 parked, baseline | — | P_stuck **and** P_rate fire | — | none; NVTL 3.15–3.20 |
+| S1 parked, synthetic stuck | 5.0 m/s, fresh stamp | same as S0 | VIOLATED | **EKF v → 5.0 m/s, EKF pose drifts 67.8 m, NVTL 3.18 → 1.55 and does not recover; control_cmd a = −10 m/s²; init_state stays INITIALIZED** |
+| S2 parked, capture stuck | real 0.0, fresh stamp | same as S0 | VIOLATED | none |
+| S3 parked, capture ×10 | real 0.0, asked 300 Hz, **got ~43 Hz** | same as S0 | VIOLATED | none |
+| S4 parked, capture back-dated 2 s | real 0.0 | same as S0 | VIOLATED | none (stamp age ignored) |
+| D0 driving, baseline | — | P_stuck pass; P_rate fires | — | none; NVTL ≥ 2.99 |
+| D1 driving, capture stuck | real 4.183 m/s held for 8 s | **P_stuck pass** | VIOLATED (8 s) | mild: NVTL min 2.66, recovers |
+| D2 driving, capture replay-window | loop of 30 real samples (3.94–4.10) | P_stuck pass | **pass** | none: NVTL ≥ 3.04 |
+| D3 driving, capture back-dated 2 s | real 3.957 m/s, stamp −2 s | P_stuck pass | VIOLATED | none: NVTL ≥ 3.01 (stamp age ignored) |
+
+What the live run shows beyond the bench:
+
+1. **Autoware has no data-age defence on this channel.** In S1 a false speed silently corrupted
+   localization: 68 m of dead-reckoned drift on a parked car, and NVTL below the ~2.3 safety threshold.
+   Nothing changed `initialization_state` or raised a failure. Pose re-init did not recover it; only a
+   stack restart did. Back-dated stamps (S4, D3) got no reaction at all, because the converter does not
+   check `header.stamp` age. The preemptive safe-stop §5 asks for does not exist today.
+2. **The bench thresholds do not transfer to the live stream.** Parked, the real writer legitimately
+   holds 0.0, so P_stuck fires on the uninjected baseline. The real AWSIM stream also has gaps up to
+   81 ms and bursts down to 1.3 ms apart, so P_rate [25, 40] ms fires on both baselines. P_stuck needs
+   an "unless the vehicle is stationary" guard (e.g. a cross-check against wheel or IMU motion), and
+   P_rate needs bounds measured from the live channel.
+3. **Coexistence masks P_stuck at the tap.** The tap's `value_age` spans all writers. Interleaved
+   real samples keep resetting it, so the fresh-stamp stuck sensor passes (D1, D3). It is caught
+   only when value age is computed **per source GUID** (`live/per_guid.py`). A foreign second writer
+   on a single-writer topic is itself the stronger signal.
+4. **Replay-window from captured data evades every value property** (D2): per-GUID P_stuck passes too.
+   This confirms §3.4 live with genuine values.
+5. **Faithful capture is less harmful than a made-up value.** Replaying the real current value
+   (S2, D1–D3) barely moves the stack. The damage in S1 came from the value **disagreeing** with the
+   vehicle's true motion. The disruptive FI1 variant is therefore a *divergent* stale value, e.g.
+   captured at speed and replayed after the vehicle stops.
+6. **P_age remains unusable live** (as expected, see the clock caveat in `fi1_ros2_ws/README.md`).
+   Every sample reads a stamp age of ~80 000 s.
+
+Two bugs in the injector were found and fixed during this run. **With `--sim-time`, the node stopped
+after 0 samples**, because `t0` was read before `/clock` arrived. Separately, `--duration` left the
+process hung after "done". Any earlier `--sim-time` live run would have injected nothing.
+
 ## 5. What FI1 hands the SEU
 
 1. **Property.** FI1 exercises **P_stuck** (the fresh-stamp stuck sensor — the case no arrival- or
@@ -171,7 +235,11 @@ the GUID recapture + dispose manual on purpose (a mistyped GUID disposes the wro
 | SEU controls apparent age via `header.stamp`; no Path B needed | HIGH | `[code]` timestamp rule (`task-1-report.md:696-700`) + `[runtime]` (stamp_age tracks the injected stamp exactly) |
 | P_stuck catches the fresh-stamp stuck sensor that P_age/arrival miss | HIGH | `[runtime]` bench (§3.1): stamp_age~0, 0 STALE, P_stuck trips |
 | 10× flood is consumer-side deadline, not writer WHC stall (small payload) | MEDIUM | `[runtime]` (1793/1793 writes OK) + `[code]` WhcHigh; specific to this ~30 B topic |
-| Windowed replay evades a stuck-at property | HIGH | `[runtime]` (§3.4) |
+| Windowed replay evades a stuck-at property | HIGH | `[runtime]` (§3.4) + live D2 (§4.1) |
+| Autoware Core has no data-age/plausibility defence on velocity_status; a false speed corrupts localization unflagged | HIGH | `[runtime]` live S1, S4, D3 (§4.1) |
+| Bench P_stuck/P_rate thresholds false-alarm on the uninjected live stream | HIGH | `[runtime]` live S0, D0 (§4.1); P_rate magnitude may partly be host load |
+| Tap's global value_age masks a coexisting stuck writer; per-GUID catches it | HIGH | `[runtime]` live D1, D3 (§4.1) |
+| rclpy injector cannot sustain 10× (300 Hz) in the container | MEDIUM | `[runtime]` live S3 (~43 Hz); measured under CARLA load |
 | Live downstream safe-stop reaction | UNVERIFIED | requires S2-4 on the live sim (§4) |
 
 <!-- REPORT-COMPLETE -->

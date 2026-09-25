@@ -10,6 +10,8 @@
 #   ./run_fi1.sh live [--silence] Step 3 (S2-4): same, against LIVE AWSIM+Autoware. --silence
 #                                 first fires Module 1's dispose (silence-then-inject).
 #                                 REQUIRES bring-up + snapshot + a human watching (safety gate).
+#                                 SRC=capture replays the live writer's own last real sample
+#                                 (default SRC=synthetic: the fixed --stuck-value).
 set +u
 cd "$(dirname "$0")"                         # experiments/fi1-data-age
 source /opt/ros/humble/setup.bash 2>/dev/null
@@ -65,9 +67,12 @@ case "$1" in
       echo "  (left manual on purpose — a mistyped GUID disposes the wrong proxy)"
     fi
     echo "Starting FI1 injector (PATH A) on the live topic for ${DUR}s..."
+    # capture runs before the --duration clock starts; allow for its timeout
+    CAP=0; [ "${SRC:-synthetic}" = capture ] && CAP=5
     run_node --value-mode stuck --stamp-mode fresh --rate-mult "${RATE:-1}" --sim-time --duration "$DUR" \
+      --value-source "${SRC:-synthetic}" --capture-timeout "$CAP" \
       > logs/fi1_live_writer.log 2>&1 & WPID=$!
-    sleep "$DUR"; kill_all "$WPID" "$CPID"; sleep 0.3
+    sleep "$((DUR+CAP))"; kill_all "$WPID" "$CPID"; sleep 0.3
     echo "consumer received: $(grep -c 'event=SAMPLE' logs/fi1_live_consumer.log) samples"
     $CHK logs/fi1_live_consumer.log
     echo "RECORD the vehicle/stack reaction as [runtime] (command+date+what-was-running)." ;;
