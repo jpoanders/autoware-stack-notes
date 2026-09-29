@@ -6,6 +6,12 @@
 > and the [FI1 report](../../fi1-data-age/report.md) for the property/SEU context.** Evidence tags:
 > `[code]`/`[spec]`/`[runtime]`/`[INFERRED]`/`[UNVERIFIED — needs Stage 2]`.
 
+> **Update 2026-09-29:** the route being implemented is **not** this Unity rebuild. It is an
+> `LD_PRELOAD` shim on Cyclone's `dds_write` in the AWSIM process: no Unity, and it keeps the
+> acquisition-time stamp. See **[`../shim/PLAN.md`](../shim/PLAN.md)**. Known issues in this folder
+> (§7 there): emission-time stamping makes a constant delay invisible; the camera topic has no
+> consumer in Autoware Core; the fault can only be armed from the Inspector.
+
 ## Verdict
 
 **Option 2 is feasible and is implemented here — but it cannot take effect on the lab PC's *current*
