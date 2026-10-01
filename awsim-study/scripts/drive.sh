@@ -26,5 +26,5 @@ ros2 topic pub /control/command/gear_cmd autoware_vehicle_msgs/msg/GearCommand "
 
 #4. Watch AWSIM's window — the vehicle should start driving. Keep NVTL streaming in a spare
 #   terminal while it drives, to catch localization drift before it causes a collision:
-ros2 topic echo /localization/pose_estimator/nearest_voxel_transformation_likelihood
+ros2 topic echo /localization/pose_estimator/nearest_voxel_transformation_likelihood --once
 
