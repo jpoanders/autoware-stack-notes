@@ -38,7 +38,7 @@ workspace inside the container, so `build/install/log` stay in the container (go
 land on the host with the container user's uid:
 
 ```bash
-# add to the `docker run` in setup/scripts/launch-autoware-container.sh:
+# add to the `docker run` in scripts/launch-autoware-container.sh:
 -v <ABS_PATH>/fi1_ros2_ws/src:/home/aw/fi1_ws/src:ro
 #   <ABS_PATH> = .../awsim-study/experiments/fi1-data-age
 

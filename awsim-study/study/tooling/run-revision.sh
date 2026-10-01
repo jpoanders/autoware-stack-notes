@@ -169,10 +169,6 @@ revise "$REPORTS_DIR/wiki_summary.md" \
   "condensed quick-read: reframe to safety/STL, consistent with the revised wiki.md." \
   || true
 
-revise "source-code-study-summary.md" \
-  "top-level English summary: rewrite the premise to the Safety Enforcement Unit / STL runtime-verification purpose." \
-  || true
-
 echo
 if [[ -s "$LOG_DIR/revision-incomplete.txt" ]]; then
   echo "SWEEP DONE with incompletes:"; cat "$LOG_DIR/revision-incomplete.txt"

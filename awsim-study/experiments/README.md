@@ -14,6 +14,9 @@ evidence, and `report.md`. Shared pieces live in `_common/`.
   (no msgs); `fi1_ros2_ws/` = the **Path A** colcon workspace (rclpy node + a minimal
   `autoware_vehicle_msgs` overlay); `analysis/fi1_seu_check.py` = the SEU/STL evaluator. Driver:
   `./run_fi1.sh bench|ros|live`.
+- **`fi3-publication-delay/`** — FI3 publication delay. `options.md` = the options study (recommends a
+  delay relay, not yet built); `option2-source-delay/` = AWSIM C# source-delay edits (needs the Unity
+  project to take effect).
 
 Cross-experiment plans: `roadmap.md`, `stage2-run-plan.md`.
 
