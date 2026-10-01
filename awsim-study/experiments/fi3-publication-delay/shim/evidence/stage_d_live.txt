@@ -1,0 +1,143 @@
+# FI3 Stage D1/D2 live AWSIM — ml-XPS-8960, 2026-10-01. One AWSIM launch per case, 60 m route, 40 s window covering engage..stop.
+# Tap = trusting_consumer (CLOCK_MONOTONIC arrival); stamp_age invalid live (sim /clock vs wall) -> P_age always fires; P_stuck = vehicle standing still before/after the drive.
+
+=================== fi3_baseline
+fi1_seu_check: 1380 samples, 1 source GUID(s): 0110da41:b2a89050:ed9f6592:00001303
+  P_age     VIOLATED  (1380/1380 samples)  first: rx=0 stamp_age=92634221.2ms > 165
+  P_stuck   VIOLATED  (481/1380 samples)  first: rx=45 value_age=1500.5ms > 1500
+  P_rate    VIOLATED  (890/1380 samples)  first: rx=1 dt=20.72ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=1.06ms  peak=943Hz (nominal 30Hz/33.3ms)
+  DT        p5=17.6 p50=32.8 p95=49.0 p99=66.3 max=94.4 ms  >40ms=463  >100ms=0
+  STALE     PASS      (0 mid-stream gaps)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate guids=1 peak_hz=943
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.02..4.22] (n=1381)
+  EKF velocity       [-0.08..4.25]
+  EKF pose moved     59.26 m over bag
+  NVTL               start=3.22 min=3.05 end=3.25
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.70]
+
+=================== fixed80
+== fixed80  2026-10-01T11:54:15-03:00  args: --baseline
+fi1_seu_check: 1380 samples, 1 source GUID(s): 0110a7e3:4c76ae47:f6082701:00001303
+  P_age     VIOLATED  (1380/1380 samples)  first: rx=0 stamp_age=93203443.1ms > 165
+  P_stuck   VIOLATED  (441/1380 samples)  first: rx=46 value_age=1522.3ms > 1500
+  P_rate    VIOLATED  (58/1380 samples)  first: rx=1 dt=22.80ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=0.50ms  peak=2000Hz (nominal 30Hz/33.3ms)
+  DT        p5=30.5 p50=33.3 p95=36.4 p99=49.4 max=99.4 ms  >40ms=36  >100ms=0
+  STALE     PASS      (0 mid-stream gaps)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate guids=1 peak_hz=2000
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=fixed delay_ms=80 jitter_ms=0 stall_ms=0 policy=flush rate_hz=0 start_s=0 duration_s=0
+shim: sent=6043 dropped=0 mean_delay=80.1ms max=84.4ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.03..4.21] (n=1379)
+  EKF velocity       [-0.07..4.37]
+  EKF pose moved     59.27 m over bag
+  NVTL               start=3.23 min=2.98 end=3.24
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.69]
+
+=================== fixed250
+== fixed250  2026-10-01T11:57:48-03:00  args: --baseline
+fi1_seu_check: 1380 samples, 1 source GUID(s): 01107986:95cfb76c:1f8d6553:00001303
+  P_age     VIOLATED  (1380/1380 samples)  first: rx=0 stamp_age=93414721.8ms > 165
+  P_stuck   VIOLATED  (489/1380 samples)  first: rx=46 value_age=1532.9ms > 1500
+  P_rate    VIOLATED  (99/1380 samples)  first: rx=13 dt=65.98ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=1.02ms  peak=980Hz (nominal 30Hz/33.3ms)
+  DT        p5=28.7 p50=33.3 p95=37.6 p99=61.6 max=79.8 ms  >40ms=51  >100ms=0
+  STALE     PASS      (0 mid-stream gaps)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate guids=1 peak_hz=980
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=fixed delay_ms=250 jitter_ms=0 stall_ms=0 policy=flush rate_hz=0 start_s=0 duration_s=0
+shim: sent=5910 dropped=0 mean_delay=250.1ms max=252.2ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.08..4.22] (n=1383)
+  EKF velocity       [-0.06..4.26]
+  EKF pose moved     59.26 m over bag
+  NVTL               start=3.22 min=2.99 end=3.23
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.70]
+
+=================== jitter
+== jitter  2026-10-01T12:01:15-03:00  args: --baseline
+fi1_seu_check: 1380 samples, 1 source GUID(s): 0110c1b3:42cf129a:12e98203:00001303
+  P_age     VIOLATED  (1380/1380 samples)  first: rx=0 stamp_age=93621562.3ms > 165
+  P_stuck   VIOLATED  (413/1380 samples)  first: rx=46 value_age=1529.9ms > 1500
+  P_rate    VIOLATED  (994/1380 samples)  first: rx=2 dt=1.77ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=0.02ms  peak=50000Hz (nominal 30Hz/33.3ms)
+  DT        p5=0.1 p50=33.1 p95=66.5 p99=74.7 max=82.2 ms  >40ms=510  >100ms=0
+  STALE     PASS      (0 mid-stream gaps)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate guids=1 peak_hz=50000
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=jitter delay_ms=30 jitter_ms=25 stall_ms=0 policy=flush rate_hz=0 start_s=0 duration_s=0
+shim: sent=5957 dropped=0 mean_delay=30.5ms max=55.2ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.06..4.22] (n=1380)
+  EKF velocity       [-0.06..4.26]
+  EKF pose moved     59.19 m over bag
+  NVTL               start=3.23 min=3.02 end=3.24
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.69]
+
+=================== stall_flush
+== stall_flush  2026-10-01T12:04:42-03:00  args: --baseline
+fi1_seu_check: 1380 samples, 1 source GUID(s): 0110fa0a:76ab9261:204dd9ec:00001303
+  P_age     VIOLATED  (1380/1380 samples)  first: rx=0 stamp_age=93829821.1ms > 165
+  P_stuck   VIOLATED  (411/1380 samples)  first: rx=46 value_age=1531.8ms > 1500
+  P_rate    VIOLATED  (55/1380 samples)  first: rx=50 dt=45.14ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=0.08ms  peak=12500Hz (nominal 30Hz/33.3ms)
+  DT        p5=30.6 p50=33.3 p95=36.1 p99=49.7 max=413.6 ms  >40ms=30  >100ms=1
+  STALE     VIOLATED  (1 mid-stream gap(s) > Delta_fresh)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate,STALE guids=1 peak_hz=12500
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=stall delay_ms=0 jitter_ms=0 stall_ms=400 policy=flush rate_hz=0 start_s=165 duration_s=0
+shim: sent=6030 dropped=0 mean_delay=0.4ms max=380.2ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.09..4.22] (n=1380)
+  EKF velocity       [-0.10..4.33]
+  EKF pose moved     59.18 m over bag
+  NVTL               start=3.24 min=2.91 end=3.24
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.69]
+
+=================== stall_latest
+== stall_latest  2026-10-01T12:08:14-03:00  args: --baseline
+fi1_seu_check: 1368 samples, 1 source GUID(s): 01101893:a6c2caff:58c161c1:00001303
+  P_age     VIOLATED  (1368/1368 samples)  first: rx=0 stamp_age=94040622.5ms > 165
+  P_stuck   VIOLATED  (487/1368 samples)  first: rx=46 value_age=1533.6ms > 1500
+  P_rate    VIOLATED  (278/1368 samples)  first: rx=3 dt=20.30ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=1.08ms  peak=926Hz (nominal 30Hz/33.3ms)
+  DT        p5=19.3 p50=33.3 p95=47.2 p99=48.6 max=409.6 ms  >40ms=147  >100ms=1
+  STALE     VIOLATED  (1 mid-stream gap(s) > Delta_fresh)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate,STALE guids=1 peak_hz=926
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=stall delay_ms=0 jitter_ms=0 stall_ms=400 policy=latest rate_hz=0 start_s=165 duration_s=0
+shim: sent=5953 dropped=11 mean_delay=0.1ms max=9.2ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [0.00..4.22] (n=1367)
+  EKF velocity       [-0.07..4.28]
+  EKF pose moved     59.29 m over bag
+  NVTL               start=3.24 min=3.03 end=3.13
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.69]
+
+=================== stretch10
+== stretch10  2026-10-01T12:11:41-03:00  args: --baseline
+fi1_seu_check: 461 samples, 1 source GUID(s): 01102c56:49a31e55:f7cfcdc9:00001303
+  P_age     VIOLATED  (461/461 samples)  first: rx=0 stamp_age=94249191.9ms > 165
+  P_stuck   VIOLATED  (137/461 samples)  first: rx=16 value_age=1584.6ms > 1500
+  P_rate    VIOLATED  (460/461 samples)  first: rx=1 dt=84.69ms outside [25,40]
+  P_deadline OBSERVED  min_inter_arrival=84.69ms  peak=12Hz (nominal 30Hz/33.3ms)
+  DT        p5=99.9 p50=100.0 p95=100.1 p99=100.7 max=101.6 ms  >40ms=460  >100ms=199
+  STALE     PASS      (0 mid-stream gaps)
+SEU_VERDICT alarms=P_age,P_stuck,P_rate guids=1 peak_hz=12
+# [FI3] ARMED topic=rt/vehicle/status/velocity_status mode=stretch delay_ms=0 jitter_ms=0 stall_ms=0 policy=flush rate_hz=10 start_s=0 duration_s=0
+shim: sent=2233 dropped=4467 mean_delay=3.5ms max=84.1ms
+-- stack reaction (bag_an.py):
+  converter twist.x  [-0.07..4.22] (n=460)
+  EKF velocity       [-0.08..4.32]
+  EKF pose moved     59.18 m over bag
+  NVTL               start=3.23 min=2.86 end=3.25
+  init_state seen    [3]
+  control_cmd v/a    v[0.00..4.17] a[-10.00..0.70]
+
+=================== stall_flush: STALE episode (mid-drive)
+TRACE t=93994759243009 event=SAMPLE rx=744 guid=0110fa0a:76ab9261:204dd9ec:00001303 lv=2.011 dt_ms=33.40 stamp_age_ms=93829819.4 value_age_ms=0.0
+TRACE t=93994939670825 event=STALE src=0110fa0a:76ab9261:204dd9ec:00001303 age_ms=180.4 (DELTA_FRESH=165) <-- freshness property VIOLATED

@@ -9,8 +9,8 @@
 > repo-relative (`$REPO = git rev-parse --show-toplevel`) or `~/…` on the lab PC. Evidence tags follow
 > the study's convention: `[code]`/`[spec]`/`[runtime]`/`[INFERRED]`/`[UNVERIFIED]`.
 >
-> **Status (2026-10-01):** Stages A–C and D0 **pass** (evidence in `evidence/`). Next: D1/D2 with
-> Autoware running and a human watching the vehicle. See "As built" below for deviations from this plan.
+> **Status (2026-10-01):** Stages A–D **done** (evidence in `evidence/`, results in `report.md`).
+> Next: optional Stage E (LiDAR) and larger stalls/delays. See "As built" below for deviations from this plan.
 
 ### As built (deviations from §2–§4)
 - **Symbol resolution:** `real()` tries `dlsym(RTLD_NEXT)` then `dlopen("libddsc.so.0", RTLD_NOLOAD)`,
@@ -173,13 +173,13 @@ read once).
       but with `FI3_MODE=probe LD_PRELOAD=$SHIM/build/libfi3_delay.so ./AWSIM-Demo-Lightweight.x86_64`.
       **Pass:** `FI3_LOG` lists the target topic (and LiDAR topics). **If it's empty**, Unity's
       loading bypasses the preload: stop and fall back (§6).
-- [ ] **D1 — baseline:** `FI3_MODE=off`. The vehicle drives the route normally; record the baseline with `../../fi1-data-age/live/run_case.sh fi3_baseline 60 --baseline`.
-- [ ] **D2 — matrix:** the §C cases, one per AWSIM launch, via `../../fi1-data-age/live/run_case.sh fi3_<case> <dur> --baseline` (AWSIM relaunched with that case's `FI3_*` env). Judge
+- [x] **D1 — baseline:** `FI3_MODE=off`. The vehicle drives the route normally; record the baseline with `../../fi1-data-age/live/run_case.sh fi3_baseline 60 --baseline`.
+- [x] **D2 — matrix:** the §C cases, one per AWSIM launch, via `./run_live.sh <case> 40 FI3_…=…` (wraps relaunch + `reset_aw.sh` + `run_case.sh` + engage) (AWSIM relaunched with that case's `FI3_*` env). Judge
       on **arrival-side dt + shim ground truth**, not stamp_age (AWSIM stamps with the sim `/clock`
       and the tap compares against wall clock). Record the stack's reaction: the EKF
       (`/localization/kinematic_state`), `/sensing/vehicle_velocity_converter/twist_with_covariance`, the
       operation mode, and whether anything degrades or stops (absent the SEU).
-- [ ] Commit evidence + a `report.md` (verdicts, the stack's reaction, confidence table).
+- [x] Commit evidence + a `report.md` (verdicts, the stack's reaction, confidence table).
 
 ### Stage E — optional: LiDAR target
 - [x] From the D0 probe log, take the exact point-cloud topic name (expected around

@@ -77,6 +77,10 @@ def main():
     v_rate  = verdict("P_rate",  rate_viol,  f"dt={rate_viol[0]['dt']:.2f}ms outside [{a.rate_lo_ms:.0f},{a.rate_hi_ms:.0f}]" if rate_viol else "")
     print(f"  P_deadline OBSERVED  min_inter_arrival={min_dt:.2f}ms  peak={peak_hz:.0f}Hz "
           f"(nominal 30Hz/33.3ms)")
+    if dts:   # live AWSIM breaks P_rate even at baseline; compare distributions instead
+        s = sorted(dts); q = lambda p: s[min(len(s) - 1, int(p * len(s)))]
+        print(f"  DT        p5={q(.05):.1f} p50={q(.5):.1f} p95={q(.95):.1f} p99={q(.99):.1f} "
+              f"max={s[-1]:.1f} ms  >40ms={sum(d > 40 for d in s)}  >100ms={sum(d > 100 for d in s)}")
 
     if stale_eps:
         print(f"  STALE     VIOLATED  ({stale_eps} mid-stream gap(s) > Delta_fresh)")
