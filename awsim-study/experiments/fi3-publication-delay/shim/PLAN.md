@@ -9,7 +9,26 @@
 > repo-relative (`$REPO = git rev-parse --show-toplevel`) or `~/…` on the lab PC. Evidence tags follow
 > the study's convention: `[code]`/`[spec]`/`[runtime]`/`[INFERRED]`/`[UNVERIFIED]`.
 >
-> **Status (2026-09-29):** plan only. No shim code exists yet (Stage A builds it).
+> **Status (2026-10-01):** Stages A–C and D0 **pass** (evidence in `evidence/`). Next: D1/D2 with
+> Autoware running and a human watching the vehicle. See "As built" below for deviations from this plan.
+
+### As built (deviations from §2–§4)
+- **Symbol resolution:** `real()` tries `dlsym(RTLD_NEXT)` then `dlopen("libddsc.so.0", RTLD_NOLOAD)`,
+  because rmw/libddsc are `dlopen`ed `RTLD_LOCAL`. All ddsc calls go through these pointers (the shim is
+  not linked to ddsc). Bare-Cyclone `dds_create_topic` also routes through the hooked
+  `dds_create_topic_sertype`, so plain C writers are covered too `[runtime]`.
+- **Dropped samples** (`stall latest`, `stretch`, queue full) are freed with the header-inline
+  `ddsi_serdata_unref` (Humble's ddsc asserts `refc == 0` in free).
+- **Modes cut:** no `FI3_REORDER`, no `FI3_DIST=gauss` (uniform jitter, FIFO only).
+- **No new bench publisher / checker / live runner.** Bench writer = Module 1's `real_speed_monitor`
+  (built here; stamps on `CLOCK_MONOTONIC` like the tap — the rclpy node stamps wall clock, which makes
+  `stamp_age` meaningless against the tap). Checker = `../../fi1-data-age/analysis/fi1_seu_check.py`,
+  now also counting mid-stream `STALE` episodes. Live runner = `../../fi1-data-age/live/run_case.sh NAME DUR --baseline`
+  with AWSIM launched as `FI3_… LD_PRELOAD=$SHIM/build/libfi3_delay.so scripts/launch-awsim.sh`.
+- **No shim↔tap cross-check script**; the shim's own log shows delays within 0.5 ms of target
+  (`evidence/stage_c_bench.txt`).
+- **No `dds_writecdr` hook needed:** the D0 probe shows the LiDAR plugin also publishes via `dds_write`
+  (`evidence/d0_probe_lidar.txt`); target topic `rt/sensing/lidar/top/pointcloud_raw_ex`.
 
 ## 1. Why a shim (context)
 
@@ -111,24 +130,24 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$HOME/cyclone
 ```
 
 ### Stage A — prerequisites + implement (lab PC)
-- [ ] `grep -h 'DDS_VERSION ' /opt/ros/humble/include/dds/version.h` → 0.10.x. **Stop** if the
+- [x] `grep -h 'DDS_VERSION ' /opt/ros/humble/include/dds/version.h` → 0.10.x. **Stop** if the
       `dds/ddsi/ddsi_serdata.h` header is missing (then clone `eclipse-cyclonedds/cyclonedds@0.10.3`
       and configure it only to generate the headers).
-- [ ] `find ~/AWSIM-Demo-Lightweight/AWSIM-Demo-Lightweight_Data/Plugins -name "libddsc.so*" -o -name "librmw_cyclonedds_cpp.so"` shows `libddsc.so*` and `librmw_cyclonedds_cpp.so`.
-- [ ] Informational: `ls …_Data/Managed/Assembly-CSharp.dll` exists and there is **no** `GameAssembly.so`
+- [x] `find ~/AWSIM-Demo-Lightweight/AWSIM-Demo-Lightweight_Data/Plugins -name "libddsc.so*" -o -name "librmw_cyclonedds_cpp.so"` shows `libddsc.so*` and `librmw_cyclonedds_cpp.so`.
+- [x] Informational: `ls …_Data/Managed/Assembly-CSharp.dll` exists and there is **no** `GameAssembly.so`
       (a Mono build; this matters only for the non-shim fallback).
-- [ ] Implement the §3 files. `cmake -S $SHIM -B $SHIM/build && cmake --build $SHIM/build` → `libfi3_delay.so`.
-- [ ] `nm -D $SHIM/build/libfi3_delay.so | grep -E ' T (dds_write|dds_create_topic_sertype)$'` shows both.
-- [ ] The fi1 overlay is built: `(cd $REPO/awsim-study/experiments/fi1-data-age/fi1_ros2_ws && colcon build)`.
+- [x] Implement the §3 files. `cmake -S $SHIM -B $SHIM/build && cmake --build $SHIM/build` → `libfi3_delay.so`.
+- [x] `nm -D $SHIM/build/libfi3_delay.so | grep -E ' T (dds_write|dds_create_topic_sertype)$'` shows both.
+- [x] The fi1 overlay is built: `(cd $REPO/awsim-study/experiments/fi1-data-age/fi1_ros2_ws && colcon build)`.
 
 ### Stage B — reachability smoke (lab PC, no AWSIM)
-- [ ] `FI3_MODE=probe LD_PRELOAD=$SHIM/build/libfi3_delay.so python3 $SHIM/bench/fi3_nominal_pub.py`
+- [x] `FI3_MODE=probe LD_PRELOAD=$SHIM/build/libfi3_delay.so python3 $SHIM/bench/fi3_nominal_pub.py`
       (overlay sourced). **Pass:** `FI3_LOG` lists `rt/vehicle/status/velocity_status`. This proves the
       preload survives rmw being `dlopen`ed, which rehearses Unity's plugin loading.
-- [ ] Same run, but the tap `$SHIM/build/trusting_consumer` receives samples with `FI3_MODE=off`, and the stack keeps working.
+- [x] Same run, but the tap `$SHIM/build/trusting_consumer` receives samples with `FI3_MODE=off`, and the stack keeps working.
 
 ### Stage C — bench matrix (lab PC, no AWSIM; stamp_age is valid because everything shares one wall clock)
-- [ ] `$SHIM/run_bench.sh`: each case = tap + preloaded `fi3_nominal_pub.py` for `DUR` s, then `fi3_seu_check.py`:
+- [x] `$SHIM/run_bench.sh`: each case = tap + preloaded `fi3_nominal_pub.py` for `DUR` s, then `fi3_seu_check.py`:
 
 | Case | Env | Expect |
 |---|---|---|
@@ -140,7 +159,7 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI=file://$HOME/cyclone
 | `stall_latest` | `stall`, `STALL_MS=400 START_S=2 STALL_POLICY=latest` | STALE + P_rate |
 | `stretch10` | `stretch`, `RATE_HZ=10` | P_rate |
 
-- [ ] **Gate → Stage D:** every case produces exactly its expected verdict set, **and** the cross-check
+- [x] **Gate → Stage D:** every case produces exactly its expected verdict set, **and** the cross-check
       (shim `t_out` vs tap arrival) agrees within ±2 ms. Commit the curated excerpts to `evidence/`. **Do
       not go live with a flaky oracle.**
 
@@ -150,12 +169,12 @@ S2-0 bring-up (pose → NVTL → goal → engage, `../../fi1-data-age/live/*.sh`
 one-command restart, and one fault run per AWSIM launch (**restart AWSIM between cases**; the env is
 read once).
 
-- [ ] **D0 — preload reaches AWSIM:** launch AWSIM exactly as in `setup/autoware-core-awsim-setup-guide.md §6a`,
+- [x] **D0 — preload reaches AWSIM:** launch AWSIM exactly as in `setup/autoware-core-awsim-setup-guide.md §6a`,
       but with `FI3_MODE=probe LD_PRELOAD=$SHIM/build/libfi3_delay.so ./AWSIM-Demo-Lightweight.x86_64`.
       **Pass:** `FI3_LOG` lists the target topic (and LiDAR topics). **If it's empty**, Unity's
       loading bypasses the preload: stop and fall back (§6).
-- [ ] **D1 — baseline:** `FI3_MODE=off`. The vehicle drives the route normally; record the baseline with `live/run_case_fi3.sh baseline 60`.
-- [ ] **D2 — matrix:** the §C cases, one per AWSIM launch, via `live/run_case_fi3.sh <case> <dur>`. Judge
+- [ ] **D1 — baseline:** `FI3_MODE=off`. The vehicle drives the route normally; record the baseline with `../../fi1-data-age/live/run_case.sh fi3_baseline 60 --baseline`.
+- [ ] **D2 — matrix:** the §C cases, one per AWSIM launch, via `../../fi1-data-age/live/run_case.sh fi3_<case> <dur> --baseline` (AWSIM relaunched with that case's `FI3_*` env). Judge
       on **arrival-side dt + shim ground truth**, not stamp_age (AWSIM stamps with the sim `/clock`
       and the tap compares against wall clock). Record the stack's reaction: the EKF
       (`/localization/kinematic_state`), `/sensing/vehicle_velocity_converter/twist_with_covariance`, the
@@ -163,7 +182,7 @@ read once).
 - [ ] Commit evidence + a `report.md` (verdicts, the stack's reaction, confidence table).
 
 ### Stage E — optional: LiDAR target
-- [ ] From the D0 probe log, take the exact point-cloud topic name (expected around
+- [x] From the D0 probe log, take the exact point-cloud topic name (expected around
       `rt/sensing/lidar/top/pointcloud_raw_ex` `[UNVERIFIED]`).
 - [ ] Re-run D2 `fixed`/`stall` with `FI3_TOPIC=<that>`. Watch the copy cost at 10 Hz. This is the delay
       on Core perception's real input (ground filter + euclidean clustering, and NDT via the LiDAR chain).

@@ -1,0 +1,34 @@
+== FI3 shim bench (loopback, no AWSIM) — host ml-XPS-8960, 2026-10-01T10:49:56-03:00 ==
+=== CASE control  (expect: NONE) ===
+consumer received: 179 samples; shim:  sent,  dropped
+SEU_VERDICT alarms=NONE guids=1 peak_hz=30
+=== CASE fixed80  (expect: NONE) ===
+consumer received: 178 samples; shim: 178 sent, 0 dropped
+SEU_VERDICT alarms=NONE guids=1 peak_hz=30
+=== CASE fixed250  (expect: P_age) ===
+consumer received: 173 samples; shim: 173 sent, 0 dropped
+  P_age     VIOLATED  (173/173 samples)  first: rx=0 stamp_age=250.6ms > 165
+SEU_VERDICT alarms=P_age guids=1 peak_hz=30
+=== CASE jitter  (expect: P_rate) ===
+consumer received: 179 samples; shim: 179 sent, 0 dropped
+  P_rate    VIOLATED  (124/179 samples)  first: rx=1 dt=49.86ms outside [25,40]
+SEU_VERDICT alarms=P_rate guids=1 peak_hz=50000
+=== CASE stall_flush  (expect: P_age,P_rate,STALE) ===
+consumer received: 179 samples; shim: 180 sent, 0 dropped
+  P_age     VIOLATED  (8/179 samples)  first: rx=59 stamp_age=400.3ms > 165
+  P_rate    VIOLATED  (3/179 samples)  first: rx=59 dt=433.26ms outside [25,40]
+  STALE     VIOLATED  (1 mid-stream gap(s) > Delta_fresh)
+SEU_VERDICT alarms=P_age,P_rate,STALE guids=1 peak_hz=12500
+=== CASE stall_latest  (expect: P_rate,STALE) ===
+consumer received: 168 samples; shim: 169 sent, 11 dropped
+  P_rate    VIOLATED  (2/168 samples)  first: rx=59 dt=433.20ms outside [25,40]
+  STALE     VIOLATED  (1 mid-stream gap(s) > Delta_fresh)
+SEU_VERDICT alarms=P_rate,STALE guids=1 peak_hz=20000
+=== CASE stretch10  (expect: P_rate) ===
+consumer received: 59 samples; shim: 60 sent, 119 dropped
+  P_rate    VIOLATED  (58/59 samples)  first: rx=1 dt=100.00ms outside [25,40]
+SEU_VERDICT alarms=P_rate guids=1 peak_hz=10
+== bench done. Compare each SEU_VERDICT line to its 'expect'. ==
+shim fixed80   n=178 delay_ms mean=80.21 min=80.07 max=80.47
+shim fixed250  n=173 delay_ms mean=250.20 min=250.12 max=250.38
+shim jitter    n=179 delay_ms mean=29.88 min=5.11 max=55.00

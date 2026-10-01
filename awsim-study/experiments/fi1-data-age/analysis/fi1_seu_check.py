@@ -11,6 +11,7 @@ Properties:
   P_age    G( t_now - header.stamp <= Delta_expiry )   -> catches --stamp-mode old
   P_stuck  G( time_since_last_value_change <= Delta_stuck ) -> catches fresh-stamp stuck sensor
   P_rate   G( inter_arrival in [rate_lo, rate_hi] )    -> catches 2x/10x over-publication
+  STALE    arrival watchdog: tap printed event=STALE, then samples resumed (FI3 gaps)
   P_deadline  observed only: min inter-arrival / peak Hz (deadline pressure, recorded)
 
 Usage:
@@ -33,10 +34,14 @@ def main():
     a = ap.parse_args()
 
     rows = []
+    stale_eps, stale_open = 0, False   # STALE episodes ended by a later sample (mid-stream gaps)
     with open(a.log, encoding="utf-8", errors="replace") as f:
         for line in f:
+            if "event=STALE" in line and rows:
+                stale_open = True
             m = SAMPLE.search(line)
             if m:
+                stale_eps += stale_open; stale_open = False
                 rows.append(dict(rx=int(m[1]), guid=m[2], lv=float(m[3]),
                                  dt=float(m[4]), sage=float(m[5]), vage=float(m[6])))
     if not rows:
@@ -73,7 +78,12 @@ def main():
     print(f"  P_deadline OBSERVED  min_inter_arrival={min_dt:.2f}ms  peak={peak_hz:.0f}Hz "
           f"(nominal 30Hz/33.3ms)")
 
-    fired = [n for n, v in (("P_age",v_age),("P_stuck",v_stuck),("P_rate",v_rate)) if v]
+    if stale_eps:
+        print(f"  STALE     VIOLATED  ({stale_eps} mid-stream gap(s) > Delta_fresh)")
+    else:
+        print(f"  STALE     PASS      (0 mid-stream gaps)")
+
+    fired = [n for n, v in (("P_age",v_age),("P_stuck",v_stuck),("P_rate",v_rate),("STALE",stale_eps)) if v]
     print(f"SEU_VERDICT alarms={','.join(fired) if fired else 'NONE'} "
           f"guids={len(guids)} peak_hz={peak_hz:.0f}")
 

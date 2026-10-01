@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_case.sh NAME DUR [injector args | --baseline]
 NAME=$1; DUR=$2; shift 2
-FI1=/home/joao.anders/src/github.com/jpoanders/autoware-stack-notes/awsim-study/experiments/fi1-data-age
+FI1=$(cd "$(dirname "$0")/.." && pwd)
 L=$FI1/logs/live; mkdir -p $L
 SP=$(dirname "$0")
 source /opt/ros/humble/setup.bash
